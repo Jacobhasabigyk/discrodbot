@@ -19,8 +19,11 @@ CREATE TABLE IF NOT EXISTS warnings (
 
 conn.commit()
 load_dotenv()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
+if not TOKEN:
+    raise ValueError("DISCORD_TOKEN not found in environment variables.")
 # ROLE IDS
 OWNER_ROLE = 1459718191344259155
 HEAD_MOD_ROLE = 1471268870885998632
@@ -53,12 +56,15 @@ async def send_log(embed):
         await channel.send(embed=embed)
 
 
-# READY EVENT
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"Bot online as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+    except Exception as e:
+        print(e)
 
+    print(f"Bot online as {bot.user}")
 @bot.tree.command(name="warn", description="Warn a user")
 @app_commands.describe(
     member="User to warn",
@@ -629,5 +635,5 @@ async def staff(interaction: discord.Interaction):
     await interaction.response.send_message(
         "<@&1468440661153026059> Staff assistance needed."
     )
-
+print("Starting Buttonland bot...")
 bot.run(TOKEN)
