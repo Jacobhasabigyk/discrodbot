@@ -380,6 +380,14 @@ async def say(
     message: str
 ):
 
+    # Only Head Mods and Owner
+    if not has_role_interaction(interaction, [OWNER_ROLE, HEAD_MOD_ROLE]):
+        await interaction.response.send_message(
+            "❌ Only Head Mods or Owner can use this.",
+            ephemeral=True
+        )
+        return
+
     await interaction.response.send_message(message)
 
 @bot.tree.command(name="coinflip", description="Flip a coin")
