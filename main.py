@@ -78,13 +78,10 @@ async def warn(
 
     # Staff permission check
     if not has_role_interaction(interaction, [OWNER_ROLE, HEAD_MOD_ROLE, MOD_ROLE]):
-        await interaction.response.send_message(
-            "❌ Staff only.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Staff only.", ephemeral=True)
         return
 
-    # Insert warning into database
+    # Add warning to database
     cursor.execute(
         "INSERT INTO warnings (user_id, reason) VALUES (?, ?)",
         (str(member.id), reason)
@@ -96,12 +93,54 @@ async def warn(
         "SELECT COUNT(*) FROM warnings WHERE user_id=?",
         (str(member.id),)
     )
-
     warn_count = cursor.fetchone()[0]
 
-    await interaction.response.send_message(
-        f"⚠️ {member.mention} warned.\nTotal warnings: **{warn_count}**"
+    punishment = "None"
+
+    try:
+
+        # 1st warning → 10 min timeout
+        if warn_count == 1:
+            await member.timeout(timedelta(minutes=10), reason=reason)
+            punishment = "10 minute timeout"
+
+        # 2nd warning → 30 min timeout
+        elif warn_count == 2:
+            await member.timeout(timedelta(minutes=30), reason=reason)
+            punishment = "30 minute mute"
+
+        # 3rd warning → 2 hour timeout
+        elif warn_count == 3:
+            await member.timeout(timedelta(hours=2), reason=reason)
+            punishment = "2 hour mute (EXTREME WARNING)"
+
+        # 4th warning → 24 hour timeout
+        elif warn_count == 4:
+            await member.timeout(timedelta(hours=24), reason=reason)
+            punishment = "24 hour mute (FINAL WARNING)"
+
+        # 5th warning → ban
+        elif warn_count >= 5:
+            await member.ban(reason="5 warnings reached")
+            punishment = "Permanent Ban"
+
+    except:
+        punishment = "Warning added but punishment failed"
+
+    embed = discord.Embed(
+        title="⚖️ User Warned",
+        color=0xffcc00
     )
+
+    embed.add_field(name="User", value=member.mention)
+    embed.add_field(name="Moderator", value=interaction.user.mention)
+    embed.add_field(name="Reason", value=reason, inline=False)
+    embed.add_field(name="Total Warnings", value=warn_count)
+    embed.add_field(name="Punishment", value=punishment)
+
+    await interaction.response.send_message(embed=embed)
+
+    await send_log(embed)
 @bot.tree.command(name="warnings", description="Check user warnings")
 async def warnings(
     interaction: discord.Interaction,
