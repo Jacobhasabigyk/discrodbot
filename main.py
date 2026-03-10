@@ -475,7 +475,6 @@ async def invy(interaction: discord.Interaction):
 
     await interaction.response.send_message(random.choice(messages))
 
-# PP MEME
 @bot.tree.command(name="pp", description="Measure pp size")
 async def pp(
     interaction: discord.Interaction,
@@ -484,18 +483,17 @@ async def pp(
 
     member = member or interaction.user
 
- if member.id in [1267677795975303242, 1474851006977282310]:
-    await interaction.response.send_message(
-        "Error: too big to measure 😳"
-    )
-    return
+    if member.id in [1267677795975303242, 1474851006977282310]:
+        await interaction.response.send_message(
+            "Error: too big to measure 😳"
+        )
+        return
 
     size = random.randint(1, 10)
 
     await interaction.response.send_message(
         f"{member.mention}'s pp size:\n8{'='*size}D"
     )
-
 @bot.tree.command(name="clear", description="Delete messages")
 async def clear(
     interaction: discord.Interaction,
