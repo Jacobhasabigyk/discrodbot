@@ -435,7 +435,116 @@ async def coinflip(interaction: discord.Interaction):
     await interaction.response.send_message(
         random.choice(["Heads 🪙", "Tails 🪙"])
     )
+# PVP COINFLIP ACCEPT BUTTONS
+class CoinFlipView(discord.ui.View):
+    def __init__(self, challenger, opponent, challenger_side):
+        super().__init__(timeout=30)
+        self.challenger = challenger
+        self.opponent = opponent
+        self.challenger_side = challenger_side
+        self.opponent_side = "Tails" if challenger_side == "Heads" else "Heads"
 
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if interaction.user.id != self.opponent.id:
+            await interaction.response.send_message(
+                "❌ Only the challenged user can accept.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.edit_message(content="🪙 Flipping the coin...", view=None)
+
+        await discord.utils.sleep_until(discord.utils.utcnow() + timedelta(seconds=2))
+
+        result = random.choice(["Heads", "Tails"])
+
+        if result == self.challenger_side:
+            winner = self.challenger
+            side = self.challenger_side
+        else:
+            winner = self.opponent
+            side = self.opponent_side
+
+        embed = discord.Embed(
+            title="🪙 PvP Coin Flip",
+            color=0xf1c40f
+        )
+
+        embed.add_field(name="Coin Landed On", value=result)
+        embed.add_field(name="Winner", value=f"🏆 {winner.mention} won with **{side}**")
+
+        await interaction.channel.send(embed=embed)
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if interaction.user.id != self.opponent.id:
+            await interaction.response.send_message(
+                "❌ Only the challenged user can decline.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.edit_message(
+            content="❌ Coin flip declined.",
+            view=None
+        )
+
+
+# PVP COINFLIP COMMAND
+@bot.tree.command(name="pvpcoinflip", description="Challenge someone to a coin flip")
+@app_commands.describe(
+    opponent="User you want to challenge",
+    side="Choose Heads or Tails"
+)
+async def pvpcoinflip(
+    interaction: discord.Interaction,
+    opponent: discord.Member,
+    side: str
+):
+
+    side = side.capitalize()
+
+    if side not in ["Heads", "Tails"]:
+        await interaction.response.send_message(
+            "❌ Choose **Heads** or **Tails**.",
+            ephemeral=True
+        )
+        return
+
+    if opponent.bot:
+        await interaction.response.send_message(
+            "❌ You cannot challenge a bot.",
+            ephemeral=True
+        )
+        return
+
+    if opponent.id == interaction.user.id:
+        await interaction.response.send_message(
+            "❌ You can't challenge yourself.",
+            ephemeral=True
+        )
+        return
+
+    opponent_side = "Tails" if side == "Heads" else "Heads"
+
+    embed = discord.Embed(
+        title="🪙 Coin Flip Challenge",
+        color=0xf1c40f
+    )
+
+    embed.add_field(name="Challenger", value=interaction.user.mention)
+    embed.add_field(name="Opponent", value=opponent.mention)
+    embed.add_field(name=f"{interaction.user.display_name}'s Side", value=side)
+    embed.add_field(name=f"{opponent.display_name}'s Side", value=opponent_side)
+
+    embed.set_footer(text=f"{opponent.display_name}, click Accept or Decline")
+
+    view = CoinFlipView(interaction.user, opponent, side)
+
+    await interaction.response.send_message(embed=embed, view=view)
 @bot.tree.command(name="roll", description="Roll a number 1-100")
 async def roll(interaction: discord.Interaction):
 
