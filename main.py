@@ -790,4 +790,4 @@ async def staff(interaction: discord.Interaction):
         "<@&1468440661153026059> Staff assistance needed."
     )
 print("Starting Buttonland bot...")
-bot.run(TOKEN)
+bot.run(TOKEN, reconnect=True)
