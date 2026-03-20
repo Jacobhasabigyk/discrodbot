@@ -110,7 +110,6 @@ async def giveall(interaction: discord.Interaction, amount: int):
 
     await interaction.response.defer()
 
-    # get all users in DB
     cursor.execute("SELECT user_id FROM balances")
     users = cursor.fetchall()
 
@@ -129,7 +128,9 @@ async def giveall(interaction: discord.Interaction, amount: int):
         f"🌎 Gave **${amount}** to **{count} users**"
     )
 
-    @bot.tree.command(name="addbalance", description="Add money to a user")
+
+# ✅ FIXED — OUTSIDE THE FUNCTION
+@bot.tree.command(name="addbalance", description="Add money to a user")
 @app_commands.describe(member="User", amount="Amount to add")
 async def addbalance(interaction: discord.Interaction, member: discord.Member, amount: int):
 
@@ -144,6 +145,8 @@ async def addbalance(interaction: discord.Interaction, member: discord.Member, a
     await interaction.response.send_message(
         f"💰 Added **${amount}** to {member.mention}\nNew Balance: **${new_balance}**"
     )
+
+
 @bot.tree.command(name="warn", description="Warn a user")
 @app_commands.describe(
     member="User to warn",
