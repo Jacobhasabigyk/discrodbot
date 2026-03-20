@@ -11,13 +11,20 @@ conn = sqlite3.connect("warnings.db", check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS balances (
+    user_id TEXT PRIMARY KEY,
+    balance INTEGER
+)
+""")
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS warnings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
     reason TEXT
 )
 """)
-
 conn.commit()
+
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -47,7 +54,33 @@ def has_role_interaction(interaction, roles):
 def has_role(ctx, roles):
     user_roles = [role.id for role in ctx.author.roles]
     return any(role in user_roles for role in roles)
+def get_balance(user_id):
+    cursor.execute("SELECT balance FROM balances WHERE user_id=?", (str(user_id),))
+    row = cursor.fetchone()
 
+    if not row:
+        # default 100 for new users
+        cursor.execute(
+            "INSERT INTO balances (user_id, balance) VALUES (?, ?)",
+            (str(user_id), 100)
+        )
+        conn.commit()
+        return 100
+
+    return row[0]
+
+
+def update_balance(user_id, amount):
+    current = get_balance(user_id)
+    new_balance = current + amount
+
+    cursor.execute(
+        "UPDATE balances SET balance=? WHERE user_id=?",
+        (new_balance, str(user_id))
+    )
+    conn.commit()
+
+    return new_balance
 
 # LOG FUNCTION
 async def send_log(embed):
@@ -545,13 +578,99 @@ async def pvpcoinflip(
     view = CoinFlipView(interaction.user, opponent, side)
 
     await interaction.response.send_message(embed=embed, view=view)
-@bot.tree.command(name="roll", description="Roll a number 1-100")
-async def roll(interaction: discord.Interaction):
+@bot.tree.command(name="roll", description="Bet on high or low")
+@app_commands.describe(
+    choice="Choose high or low",
+    amount="Amount to bet"
+)
+async def roll(
+    interaction: discord.Interaction,
+    choice: str,
+    amount: int
+):
 
-    await interaction.response.send_message(
-        f"You rolled **{random.randint(1,100)}** 🎲"
+    choice = choice.lower()
+
+    # ✅ validate choice
+    if choice not in ["high", "low"]:
+        await interaction.response.send_message(
+            "❌ Choose `high` or `low`",
+            ephemeral=True
+        )
+        return
+
+    # ✅ validate amount
+    if amount <= 0:
+        await interaction.response.send_message(
+            "❌ Bet must be greater than 0",
+            ephemeral=True
+        )
+        return
+
+    user_id = str(interaction.user.id)
+
+    # ✅ get or create balance
+    cursor.execute("SELECT balance FROM balances WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        cursor.execute(
+            "INSERT INTO balances (user_id, balance) VALUES (?, ?)",
+            (user_id, 100)
+        )
+        conn.commit()
+        balance = 100
+    else:
+        balance = row[0]
+
+    # ❌ not enough money
+    if balance < amount:
+        await interaction.response.send_message(
+            f"❌ You only have **${balance}**",
+            ephemeral=True
+        )
+        return
+
+    # 🎲 roll
+    number = random.randint(1, 100)
+    result = "high" if number >= 51 else "low"
+
+    win = choice == result
+
+    # 💰 update balance
+    if win:
+        balance += amount
+    else:
+        balance -= amount
+
+    # prevent negative (optional but smart)
+    if balance < 0:
+        balance = 0
+
+    cursor.execute(
+        "UPDATE balances SET balance=? WHERE user_id=?",
+        (balance, user_id)
+    )
+    conn.commit()
+
+    # 🎨 embed
+    embed = discord.Embed(
+        title="🎲 Roll Result",
+        color=0x00ff00 if win else 0xff0000
     )
 
+    embed.add_field(name="Your Choice", value=choice.capitalize())
+    embed.add_field(name="Rolled Number", value=str(number))
+    embed.add_field(name="Result", value=result.capitalize())
+
+    if win:
+        embed.add_field(name="Outcome", value=f"✅ You WON ${amount}")
+    else:
+        embed.add_field(name="Outcome", value=f"❌ You LOST ${amount}")
+
+    embed.add_field(name="New Balance", value=f"${balance}")
+
+    await interaction.response.send_message(embed=embed)
 @bot.tree.command(name="8ball", description="Ask the magic 8ball")
 async def eightball(
     interaction: discord.Interaction,
@@ -604,21 +723,19 @@ async def pp(
         f"{member.mention}'s pp size:\n8{'='*size}D"
     )
 @bot.tree.command(name="clear", description="Delete messages")
-async def clear(
-    interaction: discord.Interaction,
-    amount: int
-):
+async def clear(interaction: discord.Interaction, amount: int):
 
     if not has_role_interaction(interaction, [OWNER_ROLE, HEAD_MOD_ROLE, MOD_ROLE]):
-        await interaction.response.send_message("❌ Staff only.", ephemeral=True)
-        return
+        return await interaction.response.send_message("❌ Staff only.", ephemeral=True)
 
-    await interaction.channel.purge(limit=amount)
+    await interaction.response.defer(ephemeral=True)
 
-    await interaction.response.send_message(
-        f"🧹 Deleted {amount} messages."
+    deleted = await interaction.channel.purge(limit=amount)
+
+    await interaction.followup.send(
+        f"🧹 Deleted {len(deleted)} messages.",
+        ephemeral=True
     )
-
 @bot.tree.command(name="kick", description="Kick a user")
 async def kick(
     interaction: discord.Interaction,
@@ -742,6 +859,71 @@ async def mute_slash(
     embed.add_field(name="Reason", value=reason)
 
     await send_log(embed)
+
+@bot.tree.command(name="balance", description="Check your balance")
+async def balance(interaction: discord.Interaction):
+
+    bal = get_balance(interaction.user.id)
+
+    await interaction.response.send_message(
+        f"💰 Your balance: **${bal}**"
+    )
+
+@bot.tree.command(name="allin", description="Go all in")
+@app_commands.describe(choice="high or low")
+async def allin(interaction: discord.Interaction, choice: str):
+
+    balance = get_balance(interaction.user.id)
+
+    if balance <= 0:
+        await interaction.response.send_message("❌ You have no money.", ephemeral=True)
+        return
+
+    # reuse your roll logic
+    number = random.randint(1, 100)
+    result = "high" if number >= 51 else "low"
+
+    win = choice.lower() == result
+
+    if win:
+        balance *= 2
+    else:
+        balance = 0
+
+    cursor.execute(
+        "UPDATE balances SET balance=? WHERE user_id=?",
+        (balance, str(interaction.user.id))
+    )
+    conn.commit()
+
+    await interaction.response.send_message(
+        f"🎲 Rolled {number} ({result})\n💰 New Balance: **${balance}**"
+    )
+
+
+@bot.tree.command(name="leaderboard", description="Top richest users")
+async def leaderboard(interaction: discord.Interaction):
+
+    cursor.execute(
+        "SELECT user_id, balance FROM balances ORDER BY balance DESC LIMIT 10"
+    )
+
+    rows = cursor.fetchall()
+
+    embed = discord.Embed(title="🏆 Richest Players", color=0xf1c40f)
+
+    for i, (user_id, balance) in enumerate(rows, 1):
+        user = await bot.fetch_user(int(user_id))
+        embed.add_field(
+            name=f"#{i} {user.name}",
+            value=f"${balance}",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+
+    
 @bot.tree.command(name="verifybuyer", description="Verify a buyer")
 async def verifybuyer(
     interaction: discord.Interaction,
