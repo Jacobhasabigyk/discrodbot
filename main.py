@@ -98,6 +98,52 @@ async def on_ready():
         print(e)
 
     print(f"Bot online as {bot.user}")
+@bot.tree.command(name="giveall", description="Give money to all users")
+@app_commands.describe(amount="Amount to give everyone")
+async def giveall(interaction: discord.Interaction, amount: int):
+
+    if not has_role_interaction(interaction, [OWNER_ROLE]):
+        return await interaction.response.send_message("❌ Owner only", ephemeral=True)
+
+    if amount <= 0:
+        return await interaction.response.send_message("❌ Amount must be positive", ephemeral=True)
+
+    await interaction.response.defer()
+
+    # get all users in DB
+    cursor.execute("SELECT user_id FROM balances")
+    users = cursor.fetchall()
+
+    count = 0
+
+    for (user_id,) in users:
+        cursor.execute(
+            "UPDATE balances SET balance = balance + ? WHERE user_id=?",
+            (amount, user_id)
+        )
+        count += 1
+
+    conn.commit()
+
+    await interaction.followup.send(
+        f"🌎 Gave **${amount}** to **{count} users**"
+    )
+
+    @bot.tree.command(name="addbalance", description="Add money to a user")
+@app_commands.describe(member="User", amount="Amount to add")
+async def addbalance(interaction: discord.Interaction, member: discord.Member, amount: int):
+
+    if not has_role_interaction(interaction, [OWNER_ROLE]):
+        return await interaction.response.send_message("❌ Owner only", ephemeral=True)
+
+    if amount <= 0:
+        return await interaction.response.send_message("❌ Amount must be positive", ephemeral=True)
+
+    new_balance = update_balance(member.id, amount)
+
+    await interaction.response.send_message(
+        f"💰 Added **${amount}** to {member.mention}\nNew Balance: **${new_balance}**"
+    )
 @bot.tree.command(name="warn", description="Warn a user")
 @app_commands.describe(
     member="User to warn",
@@ -907,21 +953,25 @@ async def leaderboard(interaction: discord.Interaction):
     cursor.execute(
         "SELECT user_id, balance FROM balances ORDER BY balance DESC LIMIT 10"
     )
-
     rows = cursor.fetchall()
+
+    if not rows:
+        return await interaction.response.send_message("❌ No data yet.")
 
     embed = discord.Embed(title="🏆 Richest Players", color=0xf1c40f)
 
     for i, (user_id, balance) in enumerate(rows, 1):
-        user = await bot.fetch_user(int(user_id))
+
+        member = interaction.guild.get_member(int(user_id))
+        name = member.name if member else f"User {user_id}"
+
         embed.add_field(
-            name=f"#{i} {user.name}",
+            name=f"#{i} {name}",
             value=f"${balance}",
             inline=False
         )
 
     await interaction.response.send_message(embed=embed)
-
 
     
 @bot.tree.command(name="verifybuyer", description="Verify a buyer")
