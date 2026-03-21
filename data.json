@@ -1,0 +1,42 @@
+{
+  "refund": "We offer a 30-day refund policy. The item must be shipped back in original condition before a refund is issued.",
+  "refund_process": "To start a refund, contact josh@buttonland.store with your order number. We will provide return instructions.",
+  "refund_time": "Refunds are typically processed within 3-5 business days after we receive your return.",
+
+  "shipping_time": "Orders are processed within 1-3 business days. Shipping times vary depending on location and carrier. 🚨 SALE TILL 04/01/26 🚨",
+  "shipping_delay": "Delays may occur during holidays, promotions, or high-volume periods.",
+
+  "shipping_availability": "We ship within the United States only. We do NOT ship internationally, to P.O. boxes, APO/FPO addresses, or mail forwarding services.",
+
+  "restricted_states": "We do NOT ship airsoft/BB guns to: Delaware, New Jersey, Rhode Island, District of Columbia, and Illinois (.22 caliber and above).",
+
+  "restricted_counties": "Restricted counties include: Cook County (IL) and King County (WA).",
+
+  "restricted_cities": "Restricted cities include: New York City (all boroughs including Manhattan, Brooklyn, Bronx, Queens, Staten Island), Yonkers NY, Buffalo NY, Rochester NY, Glen Oaks NY, Floral Park NY, Bridgeport CT, Stratford CT, Seaside CA, Philadelphia PA, and York PA.",
+
+  "nyc_shipping": "We do NOT ship airsoft/BB gun products to New York City, including the Bronx, Brooklyn, Queens, Staten Island, or Manhattan due to local laws.",
+
+  "location_check": "Shipping availability depends on your exact location. Some cities and states are restricted due to local laws. If you're unsure, ask us with your city/state and we’ll confirm.",
+
+  "tracking": "Once your order ships, you will receive a tracking number via email.",
+  "order_status": "You can track your order using your order number or by contacting support.",
+  "cancel_order": "Orders can only be canceled before they are shipped. Contact support immediately.",
+
+  "lost_package": "If your package is marked delivered but not received, contact us within 5 days. Carrier investigation may be required.",
+  "damaged_item": "If your item arrives damaged, contact us with photos within 5 days of delivery.",
+
+  "switch": "Our switches are designed for airsoft Glocks. They fit Glock 18C, Glock 19X, and Glock 17. They must be attached using adhesive.",
+  "switch_legality": "These are for airsoft use only. Customers must follow local laws and regulations.",
+    "button": "Our switches are designed for airsoft Glocks. They fit models like Glock 18C, Glock 19X, and Glock 17. They must be attached using adhesive.",
+    "buttonland": "ButtonLand, is a airsoft store, we sell airsoft products and for bb guns",
+
+  "age_requirement": "Customers must be 18 years or older to purchase airsoft or BB gun products.",
+
+  "support_email": "For help contact josh@buttonland.store",
+  "response_time": "Support usually responds within a few hours, up to 24 hours during busy times.",
+
+  "verification": "To verify your order, provide your order number or email used at checkout.",
+  "buyer_role": "After verification, you will receive the buyer role automatically.",
+
+  "faq": "You can ask about shipping, restrictions, refunds, or tracking anytime."
+}
