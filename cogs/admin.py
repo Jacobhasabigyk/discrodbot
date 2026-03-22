@@ -5,10 +5,10 @@ from config import OWNER_ROLE
 from database import cursor, conn, update_balance
 from utils.permissions import has_role_interaction
 
-# 👑 OWNER BYPASS (user IDs)
+# 👑 OWNER IDS ONLY (TRUE OWNERS)
 OWNER_IDS = {1303076149160837121, 1267677795975303242}
 
-# 🔐 STAFF ROLES (track + lookup + addbalance access)
+# 🔐 STAFF ROLES (ONLY for lookup + track)
 ALLOWED_STAFF_ROLES = [
     1484473034462199849,
     1459718191344259155
@@ -139,7 +139,7 @@ class Admin(commands.Cog):
             await interaction.followup.send("❌ error fetching orders", ephemeral=True)
 
     # =========================
-    # 🌎 GIVE ALL (OWNER ONLY)
+    # 🌎 GIVE ALL (OWNER IDS ONLY)
     # =========================
     @app_commands.command(name="giveall")
     async def giveall(self, interaction: discord.Interaction, amount: int):
@@ -161,13 +161,13 @@ class Admin(commands.Cog):
         await interaction.response.send_message(f"🌎 Gave ${amount} to everyone")
 
     # =========================
-    # 💰 ADD BALANCE (FIXED)
+    # 💰 ADD BALANCE (OWNER IDS ONLY 🔥)
     # =========================
     @app_commands.command(name="addbalance")
     async def addbalance(self, interaction: discord.Interaction, member: discord.Member, amount: int):
 
-        if not has_staff_permission(interaction):
-            return await interaction.response.send_message("❌ no permission", ephemeral=True)
+        if interaction.user.id not in OWNER_IDS:
+            return await interaction.response.send_message("❌ Owner only", ephemeral=True)
 
         new_balance = update_balance(member.id, amount)
 
