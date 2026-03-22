@@ -5,19 +5,33 @@ from config import OWNER_ROLE
 from database import cursor, conn, update_balance
 from utils.permissions import has_role_interaction
 
+# 👑 OWNER BYPASS
 OWNER_IDS = {1303076149160837121, 1267677795975303242}
+
+# 🔐 ALLOWED ROLES FOR TRACK + LOOKUP
+ALLOWED_LOOKUP_ROLES = [
+    1484473034462199849,
+    1459718191344259155
+]
+
+def has_lookup_permission(interaction: discord.Interaction):
+    return (
+        interaction.user.id in OWNER_IDS or
+        any(role.id in ALLOWED_LOOKUP_ROLES for role in interaction.user.roles)
+    )
+
 
 class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     # =========================
-    # 📦 TRACK ORDER
+    # 📦 TRACK ORDER (UPDATED)
     # =========================
-    @app_commands.command(name="track", description="Track an order (owner only)")
+    @app_commands.command(name="track", description="Track an order")
     async def track(self, interaction: discord.Interaction, order_number: int):
 
-        if interaction.user.id not in OWNER_IDS:
+        if not has_lookup_permission(interaction):
             return await interaction.response.send_message("❌ no permission", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
@@ -61,12 +75,12 @@ class Admin(commands.Cog):
             await interaction.followup.send("❌ error fetching order", ephemeral=True)
 
     # =========================
-    # 📧 LOOKUP EMAIL (FIXED)
+    # 📧 LOOKUP EMAIL (UPDATED)
     # =========================
-    @app_commands.command(name="lookup", description="Lookup orders by email (owner only)")
+    @app_commands.command(name="lookup", description="Lookup orders by email")
     async def lookup(self, interaction: discord.Interaction, email: str):
 
-        if interaction.user.id not in OWNER_IDS:
+        if not has_lookup_permission(interaction):
             return await interaction.response.send_message("❌ no permission", ephemeral=True)
 
         await interaction.response.defer(ephemeral=True)
@@ -157,6 +171,7 @@ class Admin(commands.Cog):
         await interaction.response.send_message(
             f"💰 Added ${amount} → New Balance: ${new_balance}"
         )
+
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
