@@ -21,6 +21,7 @@ intents.message_content = True
 intents.members = True
 
 PANEL_CHANNEL_ID = 1476797889509593211
+
 # ================================
 # 🤖 BOT SETUP
 # ================================
@@ -81,29 +82,23 @@ async def on_ready():
 
     if not hasattr(bot, "views_loaded"):
         bot.views_loaded = True
-
-        # ✅ register persistent views
         bot.add_view(TicketView(bot))
         bot.add_view(CloseTicketView())
-
         log("✅ Persistent views loaded")
 
-    # 🔥 START ORDER SYNC LOOP
     if not hasattr(bot, "sync_started"):
         bot.sync_started = True
         bot.loop.create_task(auto_sync_orders())
         log("✅ Shopify auto-sync started")
-    # ============================
-    # 🎟 SEND PANEL (ONLY ONCE)
-    # ============================
+
+    # 🎟 PANEL SEND (SAFE)
     try:
         channel = bot.get_channel(PANEL_CHANNEL_ID)
 
         if channel:
-            # 🔍 check last 20 messages for existing panel
             async for msg in channel.history(limit=20):
                 if msg.author == bot.user and msg.components:
-                    log("✅ Panel already exists, skipping send")
+                    log("✅ Panel already exists")
                     break
             else:
                 await channel.send(
@@ -120,36 +115,31 @@ async def on_ready():
         log("❌ Panel send failed")
         print(e)
 
-    # ============================
     # 🔄 SYNC COMMANDS
-    # ============================
-    try:
-        await sync_commands()
-        log("✅ Commands synced")
-    except Exception as e:
-        log("❌ Sync crash")
-        print(e)
+    await sync_commands()
 
     print(f"🚀 Logged in as {bot.user} ({bot.user.id})")
 
-    
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
     log(f"Message from {message.author}: {message.content}")
-
     await bot.process_commands(message)
 
-
-# 🔥 ERROR HANDLER
+# ================================
+# ❌ GLOBAL ERROR HANDLER
+# ================================
 @bot.event
 async def on_error(event, *args, **kwargs):
     print(f"❌ Error in event: {event}")
     import traceback
     traceback.print_exc()
 
+# ================================
+# 🔄 SHOPIFY SYNC LOOP
+# ================================
 async def auto_sync_orders():
     await bot.wait_until_ready()
 
@@ -171,20 +161,35 @@ async def auto_sync_orders():
             print("❌ Sync error:", e)
 
         await asyncio.sleep(600)  # every 10 mins
-# ================================
-# 🚀 MAIN START
-# ================================
-async def main():
-    log("Booting bot...")
 
-    # 🚀 START SHOPIFY OAUTH SERVER (NON-BLOCKING)
-    threading.Thread(target=run_server, daemon=True).start()
-    log("🌐 Shopify OAuth server running on http://localhost:5000")
-
+# ================================
+# 🚀 SAFE START SYSTEM
+# ================================
+async def start_bot():
     async with bot:
         await load_cogs()
         await bot.start(TOKEN)
 
+async def main():
+    log("Booting bot...")
+
+    # 🌐 START SHOPIFY SERVER
+    threading.Thread(target=run_server, daemon=True).start()
+    log("🌐 Shopify OAuth server running")
+
+    retry_delay = 30  # start at 30 sec
+
+    while True:
+        try:
+            await start_bot()
+        except Exception as e:
+            print("❌ Bot crashed:", e)
+
+            print(f"⏳ Waiting {retry_delay}s before reconnect...")
+            await asyncio.sleep(retry_delay)
+
+            # 🔥 exponential backoff (prevents bans)
+            retry_delay = min(retry_delay * 2, 300)  # max 5 mins
 
 # ================================
 # ▶️ RUN
