@@ -199,3 +199,6 @@ class Refunds(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Refunds(bot))
+
+    # ✅ REGISTER VIEW HERE (NOT IN MAIN)
+    bot.add_view(RefundView())

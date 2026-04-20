@@ -6,7 +6,7 @@ import threading
 from config import TOKEN
 
 from cogs.tickets import TicketView, CloseTicketView
-from cogs.refunds import RefundView
+# ❌ DO NOT import RefundView here anymore
 
 # 👇 IMPORT SHOPIFY SERVER
 from shopify_server import run_server
@@ -49,7 +49,7 @@ COGS = [
     "cogs.general",
     "cogs.logging",
     "cogs.tickets",
-    "cogs.refunds",
+    "cogs.refunds",  # ✅ refund system loads here
 ]
 
 async def load_cogs():
@@ -81,22 +81,23 @@ async def sync_commands():
 @bot.event
 async def on_ready():
     log("Bot connected to Discord")
-      
 
+    # ✅ ONLY ticket views here
     if not hasattr(bot, "views_loaded"):
         bot.views_loaded = True
+
         bot.add_view(TicketView(bot))
         bot.add_view(CloseTicketView())
 
-        bot.add_view(RefundView())
         log("✅ Persistent views loaded")
 
+    # 🔄 start Shopify sync
     if not hasattr(bot, "sync_started"):
         bot.sync_started = True
         bot.loop.create_task(auto_sync_orders())
         log("✅ Shopify auto-sync started")
 
-    # 🎟 PANEL SEND (SAFE)
+    # 🎟 PANEL SEND
     try:
         channel = bot.get_channel(PANEL_CHANNEL_ID)
 
@@ -120,11 +121,14 @@ async def on_ready():
         log("❌ Panel send failed")
         print(e)
 
-    # 🔄 SYNC COMMANDS
+    # 🔄 sync slash commands
     await sync_commands()
 
     print(f"🚀 Logged in as {bot.user} ({bot.user.id})")
 
+# ================================
+# 💬 MESSAGE HANDLER
+# ================================
 @bot.event
 async def on_message(message):
     if message.author.bot:
@@ -165,7 +169,7 @@ async def auto_sync_orders():
         except Exception as e:
             print("❌ Sync error:", e)
 
-        await asyncio.sleep(600)  # every 10 mins
+        await asyncio.sleep(600)
 
 # ================================
 # 🚀 SAFE START SYSTEM
@@ -178,11 +182,11 @@ async def start_bot():
 async def main():
     log("Booting bot...")
 
-    # 🌐 START SHOPIFY SERVER
+    # 🌐 start Shopify server
     threading.Thread(target=run_server, daemon=True).start()
     log("🌐 Shopify OAuth server running")
 
-    retry_delay = 30  # start at 30 sec
+    retry_delay = 30
 
     while True:
         try:
@@ -193,8 +197,7 @@ async def main():
             print(f"⏳ Waiting {retry_delay}s before reconnect...")
             await asyncio.sleep(retry_delay)
 
-            # 🔥 exponential backoff (prevents bans)
-            retry_delay = min(retry_delay * 2, 300)  # max 5 mins
+            retry_delay = min(retry_delay * 2, 300)
 
 # ================================
 # ▶️ RUN
