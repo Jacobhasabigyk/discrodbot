@@ -6,7 +6,8 @@ import threading
 from config import TOKEN
 
 # 👇 IMPORT YOUR VIEW
-from cogs.tickets import TicketView, CloseTicketView
+from cogs.tickets import TicketView, CloseTicketView, RefundView
+
 # 👇 IMPORT SHOPIFY SERVER
 from shopify_server import run_server
 
@@ -48,6 +49,7 @@ COGS = [
     "cogs.general",
     "cogs.logging",
     "cogs.tickets",
+    "cogs.refunds",
 ]
 
 async def load_cogs():
@@ -79,11 +81,14 @@ async def sync_commands():
 @bot.event
 async def on_ready():
     log("Bot connected to Discord")
+      
 
     if not hasattr(bot, "views_loaded"):
         bot.views_loaded = True
         bot.add_view(TicketView(bot))
         bot.add_view(CloseTicketView())
+
+        bot.add_view(RefundView())
         log("✅ Persistent views loaded")
 
     if not hasattr(bot, "sync_started"):
