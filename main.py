@@ -5,8 +5,8 @@ import threading
 
 from config import TOKEN
 
-# 👇 IMPORT YOUR VIEW
-from cogs.tickets import TicketView, CloseTicketView, RefundView
+from cogs.tickets import TicketView, CloseTicketView
+from cogs.refunds import RefundView
 
 # 👇 IMPORT SHOPIFY SERVER
 from shopify_server import run_server
