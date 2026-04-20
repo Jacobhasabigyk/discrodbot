@@ -180,7 +180,7 @@ class TicketView(discord.ui.View):
         await channel.send(
             embed=discord.Embed(
                 title="🎟 ButtonLand Support",
-                description="yo 👋 what do you need",
+                description="Hey, Im the buttonland support ai chatbot i can help you today.",
                 color=0x00ff00
             ),
             view=CloseTicketView()
@@ -213,7 +213,7 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.interaction or message.content.startswith("/"):
+        if message.interaction_metadata or message.content.startswith("/"):
             return
             
         if message.author.bot:

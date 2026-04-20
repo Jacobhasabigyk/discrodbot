@@ -78,7 +78,11 @@ class RefundView(discord.ui.View):
         except:
             return False
 
-    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+    @discord.ui.button(
+    label="Approve",
+    style=discord.ButtonStyle.green,
+    custom_id="refund_approve"
+    )
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not interaction.message.components:
@@ -104,7 +108,11 @@ class RefundView(discord.ui.View):
             ephemeral=True
         )
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
+    @discord.ui.button(
+    label="Deny",
+    style=discord.ButtonStyle.red,
+    custom_id="refund_deny"
+)
     async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         if not interaction.message.components:
