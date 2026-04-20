@@ -94,9 +94,7 @@ def check_shipping(msg: str):
         return "📦 We ship within the United States only. Some areas are restricted due to laws."
 
     return None
-    # =========================
-# 📚 SAFE LOAD KNOWLEDGE
-# =========================
+
 try:
     with open("data.json", "r") as f:
         KNOWLEDGE = json.load(f)
@@ -215,7 +213,9 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-
+        if message.interaction or message.content.startswith("/"):
+            return
+            
         if message.author.bot:
             return
 
@@ -256,14 +256,7 @@ class Tickets(commands.Cog):
         # =========================
         # 🚨 STAFF ESCALATION
         # =========================
-        if any(x in msg for x in ["real person", "owner", "staff", "human"]):
-            takeover_channels.add(channel_id)
-            role = message.guild.get_role(SUPPORT_ROLE)
 
-            await message.channel.send(
-                f"🛑 got you — a real person will help you shortly\n{role.mention if role else ''}"
-            )
-            return
 
         # =========================
         # ⚠️ TOXIC FILTER
@@ -381,23 +374,65 @@ class Tickets(commands.Cog):
         try:
             await message.channel.typing()
 
+            # 🧠 init memory
             if channel_id not in conversation_memory:
                 conversation_memory[channel_id] = []
 
             history = conversation_memory[channel_id]
 
+            # =========================
+            # 🚨 SMART ESCALATION
+            # =========================
+            trigger_words = [
+                "refund", "money back", "cancel order",
+                "scam", "wtf", "this is bullshit",
+                "human", "real person", "support agent",
+                "help me", "not working", "issue"
+            ]
+
+            if any(word in msg for word in trigger_words):
+
+                role = message.guild.get_role(SUPPORT_ROLE)
+
+                # 💸 refund specific
+                if "refund" in msg or "money back" in msg:
+                    await message.channel.send(
+                        "💸 i got you — a support agent will be here shortly.\n"
+                        "👉 in the meantime, use `/refund` to speed up your request 👍"
+                    )
+                else:
+                    await message.channel.send(
+                        f"🛑 got you — a real support agent will help you shortly\n"
+                        f"{role.mention if role else ''}"
+                    )
+
+                takeover_channels.add(channel_id)
+                return
+
+            # =========================
+            # 🧠 USER CONTEXT
+            # =========================
             user_orders = verified_users.get(channel_id, {}).get("orders")
             user_context = "User not verified"
 
             if user_orders:
                 user_context = f"User verified. Order #{user_orders[0].get('order_number')}"
 
+            # =========================
+            # 📚 KNOWLEDGE MATCH
+            # =========================
             knowledge_hits = [v for k, v in KNOWLEDGE.items() if k in msg]
 
+            # =========================
+            # 🧠 STORE MEMORY
+            # =========================
             history.append({"role": "user", "content": content})
-            history = history[-10:]
+            history = history[-12:]
             conversation_memory[channel_id] = history
 
+            # =========================
+            # 🤖 AI RESPONSE
+            # =========================
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -406,7 +441,14 @@ class Tickets(commands.Cog):
                         "content": f"""
 You are ButtonLand support.
 
-Be friendly, short, human.
+STYLE:
+- casual, short, human
+- helpful, not robotic
+
+RULES:
+- if refund is mentioned → suggest using /refund
+- if user sounds frustrated → suggest human support
+- do NOT repeat yourself
 
 {user_context}
 
@@ -419,6 +461,8 @@ Knowledge:
             )
 
             reply = response.choices[0].message.content[:1000]
+
+            # 🧠 save AI reply
             history.append({"role": "assistant", "content": reply})
 
             await message.channel.send(reply)
