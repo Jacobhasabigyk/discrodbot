@@ -5,42 +5,124 @@ from discord import app_commands
 from database import get_order_from_db
 
 REFUND_LOG_CHANNEL = 1485943251855867944
+CUSTOM_LOG_CHANNEL = 1485943251855867944
+
+OWNER_IDS = [
+    1267677795975303242,
+    1303076149160837121,
+    1331462779894501450
+]
+
+OWNER_ROLE = 1459718191344259155
+
+custom_orders = {}
 
 
 # =========================
-# 🧠 CHECK IF SHIPPED
+# 🔐 OWNER CHECK
 # =========================
-def can_refund(order):
-    if not order:
-        return False, "❌ order not found"
-
-    tracking = order.get("tracking") or {}
-
-    # ✅ allow if no tracking number (label only or not shipped)
-    if not tracking.get("number"):
-        return True, None
-
-    return False, "❌ order already shipped"
+def is_owner(interaction):
+    return (
+        interaction.user.id in OWNER_IDS
+        or interaction.user == interaction.guild.owner
+        or any(role.id == OWNER_ROLE for role in interaction.user.roles)
+    )
 
 
 # =========================
-# 🎛 YOUR VIEW (keep yours)
+# 📦 CUSTOM PACKAGE VIEW
+# =========================
+class CustomPackageView(discord.ui.View):
+    def __init__(self, order_id):
+        super().__init__(timeout=None)
+        self.order_id = order_id
+
+    def get_data(self):
+        return custom_orders.get(self.order_id)
+
+    async def update(self, interaction, status, color):
+        data = self.get_data()
+        if not data:
+            return await interaction.response.send_message("❌ order not found", ephemeral=True)
+
+        embed = interaction.message.embeds[0]
+        embed.color = color
+        embed.set_field_at(6, name="📊 Status", value=status, inline=True)
+
+        data["status"] = status
+
+        await interaction.message.edit(embed=embed, view=None)
+
+    @discord.ui.button(label="✅ Packaged", style=discord.ButtonStyle.green)
+    async def packaged(self, interaction, button):
+        await self.update(interaction, "📦 Packaged", 0x2ecc71)
+        await interaction.response.send_message("marked packaged", ephemeral=True)
+
+    @discord.ui.button(label="🚚 Shipped", style=discord.ButtonStyle.blurple)
+    async def shipped(self, interaction, button):
+        await self.update(interaction, "🚚 Shipped", 0x3498db)
+        await interaction.response.send_message("marked shipped", ephemeral=True)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction, button):
+        await self.update(interaction, "❌ Cancelled", 0xe74c3c)
+        await interaction.response.send_message("cancelled", ephemeral=True)
+
+
+# =========================
+# 📩 CONFIRM VIEW
+# =========================
+class ConfirmPackageView(discord.ui.View):
+    def __init__(self, data, bot):
+        super().__init__(timeout=300)
+        self.data = data
+        self.bot = bot
+
+    @discord.ui.button(label="✅ Confirm", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction, button):
+
+        order_id = str(len(custom_orders) + 1)
+
+        custom_orders[order_id] = {
+            **self.data,
+            "status": "⏳ Pending"
+        }
+
+        embed = discord.Embed(title="📦 Custom Package", color=0x9b59b6)
+
+        embed.add_field(name="👤 Customer", value=f"<@{self.data['user']}>", inline=False)
+        embed.add_field(name="📦 Item", value=self.data["item"], inline=True)
+        embed.add_field(name="📝 Notes", value=self.data["notes"], inline=False)
+
+        embed.add_field(name="📛 Name", value=self.data["name"], inline=True)
+        embed.add_field(name="🏠 Address", value=self.data["address"], inline=False)
+        embed.add_field(name="🌆 City", value=f"{self.data['city']}, {self.data['state']} {self.data['zip']}", inline=False)
+
+        embed.add_field(name="📊 Status", value="⏳ Pending", inline=True)
+        embed.set_footer(text=f"Order ID: {order_id}")
+
+        channel = self.bot.get_channel(CUSTOM_LOG_CHANNEL)
+        await channel.send(embed=embed, view=CustomPackageView(order_id))
+
+        await interaction.response.edit_message(content="✅ confirmed!", view=None)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction, button):
+        await interaction.response.edit_message(content="❌ cancelled", view=None)
+
+
+# =========================
+# 💸 REFUND VIEW
 # =========================
 class RefundView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def ask_for_reason(self, interaction: discord.Interaction):
-        await interaction.followup.send(
-            "✍️ type your message to send to the user (30s timeout)",
-            ephemeral=True
-        )
+    async def ask_for_reason(self, interaction):
+        await interaction.followup.send("✍️ type your reply (30s)", ephemeral=True)
 
         def check(m):
-            return (
-                m.author.id == interaction.user.id and
-                m.channel.id == interaction.channel.id
-            )
+            return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
 
         try:
             msg = await interaction.client.wait_for("message", timeout=30, check=check)
@@ -48,157 +130,114 @@ class RefundView(discord.ui.View):
         except:
             return None
 
-    async def dm_user(self, interaction: discord.Interaction, status: str, message: str):
-        embed = interaction.message.embeds[0]
-        footer = embed.footer.text or ""
-
-        try:
-            user_id = int(footer.split(":")[1].strip())
-            user = await interaction.client.fetch_user(user_id)
-        except:
-            return False
-
-        # safer order extraction
-        order_field = next(
-            (f.value for f in embed.fields if "Order" in f.name),
-            "Unknown"
-        )
-
-        try:
-            dm_embed = discord.Embed(
-                title=f"💸 Refund {status}",
-                color=0x00ff00 if status == "Approved" else 0xff0000
-            )
-
-            dm_embed.add_field(name="📦 Order", value=order_field)
-            dm_embed.add_field(name="💬 Message", value=message or "No message provided")
-
-            await user.send(embed=dm_embed)
-            return True
-        except:
-            return False
-
-    @discord.ui.button(
-    label="Approve",
-    style=discord.ButtonStyle.green,
-    custom_id="refund_approve"
-    )
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-
-        if not interaction.message.components:
-            return await interaction.response.send_message("⚠️ already handled", ephemeral=True)
-
+    @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, custom_id="refund_approve")
+    async def approve(self, interaction, button):
         reply = await self.ask_for_reason(interaction)
-
-        if reply is None:
-            return await interaction.followup.send("❌ timed out", ephemeral=True)
+        if not reply:
+            return await interaction.followup.send("❌ timeout", ephemeral=True)
 
         embed = interaction.message.embeds[0]
         embed.color = 0x00ff00
         embed.title = "✅ Refund Approved"
         embed.add_field(name="🧑‍💼 Staff Reply", value=reply, inline=False)
-        embed.add_field(name="👮 Handled By", value=interaction.user.mention, inline=False)
 
         await interaction.message.edit(embed=embed, view=None)
+        await interaction.followup.send("✅ done", ephemeral=True)
 
-        success = await self.dm_user(interaction, "Approved", reply)
-
-        await interaction.followup.send(
-            "✅ approved + user notified" if success else "⚠️ approved but DMs closed",
-            ephemeral=True
-        )
-
-    @discord.ui.button(
-    label="Deny",
-    style=discord.ButtonStyle.red,
-    custom_id="refund_deny"
-)
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-
-        if not interaction.message.components:
-            return await interaction.response.send_message("⚠️ already handled", ephemeral=True)
-
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, custom_id="refund_deny")
+    async def deny(self, interaction, button):
         reply = await self.ask_for_reason(interaction)
-
-        if reply is None:
-            return await interaction.followup.send("❌ timed out", ephemeral=True)
+        if not reply:
+            return await interaction.followup.send("❌ timeout", ephemeral=True)
 
         embed = interaction.message.embeds[0]
         embed.color = 0xff0000
         embed.title = "❌ Refund Denied"
         embed.add_field(name="🧑‍💼 Staff Reply", value=reply, inline=False)
-        embed.add_field(name="👮 Handled By", value=interaction.user.mention, inline=False)
 
         await interaction.message.edit(embed=embed, view=None)
-
-        success = await self.dm_user(interaction, "Denied", reply)
-
-        await interaction.followup.send(
-            "❌ denied + user notified" if success else "⚠️ denied but DMs closed",
-            ephemeral=True
-        )
+        await interaction.followup.send("❌ done", ephemeral=True)
 
 
 # =========================
-# 🎟 COG + SLASH COMMAND
+# 🎟 COG
 # =========================
 class Refunds(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="refund", description="Request a refund for an order")
-    @app_commands.describe(
-        order="Order number (ex: #1000)",
-        reason="Why do you want a refund?"
-    )
-    async def refund(self, interaction: discord.Interaction, order: str, reason: str):
-
-        await interaction.response.defer(ephemeral=True)
-
-        # 🔒 only in tickets
-        if not interaction.channel.name.startswith("ticket-"):
-            return await interaction.followup.send(
-                "❌ use this inside a support ticket",
-                ephemeral=True
-            )
-
-        # parse order
-        try:
-            order_number = int(order.replace("#", ""))
-        except:
-            return await interaction.followup.send(
-                "❌ invalid format (use #1000)",
-                ephemeral=True
-            )
-
-        order_data = get_order_from_db(order_number)
-
-        allowed, error = can_refund(order_data)
-
-        if not allowed:
-            return await interaction.followup.send(error, ephemeral=True)
-
-        # 📤 send to staff channel
-        channel = self.bot.get_channel(REFUND_LOG_CHANNEL)
+    @app_commands.command(name="custompackage", description="Create custom package")
+    async def custompackage(
+        self,
+        interaction: discord.Interaction,
+        user: discord.User,
+        item: str,
+        notes: str,
+        name: str,
+        address: str,
+        city: str,
+        state: str,
+        zip: str
+    ):
+        if not is_owner(interaction):
+            return await interaction.response.send_message("❌ owner only", ephemeral=True)
 
         embed = discord.Embed(
-            title="💸 Refund Request",
-            color=0xf1c40f
+            title="📦 Confirm Shipping Info",
+            description="Please confirm before we ship",
+            color=0x5865F2
         )
 
-        embed.add_field(name="👤 User", value=interaction.user.mention, inline=False)
-        embed.add_field(name="📦 Order", value=f"#{order_number}", inline=True)
-        embed.add_field(name="📝 Reason", value=reason, inline=False)
+        embed.add_field(name="📦 Item", value=item, inline=True)
+        embed.add_field(name="📝 Notes", value=notes, inline=False)
+        embed.add_field(name="📛 Name", value=name, inline=True)
+        embed.add_field(name="🏠 Address", value=address, inline=False)
+        embed.add_field(name="🌆 City", value=f"{city}, {state} {zip}", inline=False)
 
-        embed.set_footer(text=f"User ID: {interaction.user.id}")
+        try:
+            await user.send(
+                embed=embed,
+                view=ConfirmPackageView({
+                    "user": user.id,
+                    "item": item,
+                    "notes": notes,
+                    "name": name,
+                    "address": address,
+                    "city": city,
+                    "state": state,
+                    "zip": zip
+                }, self.bot)
+            )
 
-        await channel.send(embed=embed, view=RefundView())
+            await interaction.response.send_message(
+                f"📩 confirmation sent to {user.mention}",
+                ephemeral=True
+            )
 
-        await interaction.followup.send("✅ refund request submitted", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ user has DMs closed",
+                ephemeral=True
+            )
+
+    @app_commands.command(name="customlist", description="View custom orders")
+    async def customlist(self, interaction: discord.Interaction):
+        if not is_owner(interaction):
+            return await interaction.response.send_message("❌ owner only", ephemeral=True)
+
+        if not custom_orders:
+            return await interaction.response.send_message("no orders", ephemeral=True)
+
+        msg = ""
+        for oid, data in custom_orders.items():
+            msg += f"**#{oid}** - {data['item']} ({data['status']})\n"
+
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
+# =========================
+# 🔌 SETUP
+# =========================
 async def setup(bot):
     await bot.add_cog(Refunds(bot))
-
-    # ✅ REGISTER VIEW HERE (NOT IN MAIN)
     bot.add_view(RefundView())

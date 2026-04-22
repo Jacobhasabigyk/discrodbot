@@ -48,11 +48,14 @@ class General(commands.Cog):
         await interaction.response.send_message("https://buttonland.store")
 
     @app_commands.command(name="applyforcc")
-    async def shop(self, interaction: discord.Interaction):
+    async def applyforcc(self, interaction: discord.Interaction):
         await interaction.response.send_message("Go to https://buttonlandmail.com to apply")
         
     @app_commands.command(name="fuckcross")
-    async def shop(self, interaction: discord.Interaction):
+    async def fuckcross(self, interaction: discord.Interaction):
         await interaction.response.send_message("Hmm, I agree with you he kinda is a little bitch.")
+
+
+
 async def setup(bot):
     await bot.add_cog(General(bot))
