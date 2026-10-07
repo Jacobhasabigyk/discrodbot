@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 
-from database import get_order_from_db
 
 REFUND_LOG_CHANNEL = 1485943251855867944
 CUSTOM_LOG_CHANNEL = 1485943251855867944

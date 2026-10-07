@@ -4,6 +4,9 @@ from discord import app_commands
 from config import OWNER_ROLE
 from database import cursor, conn, update_balance
 from utils.permissions import has_role_interaction
+from services import buttonland
+from services.buttonland import ButtonlandError
+from cogs.tickets import money, order_embed
 
 # 👑 OWNER IDS ONLY (TRUE OWNERS)
 OWNER_IDS = {1303076149160837121, 1267677795975303242}
@@ -11,7 +14,8 @@ OWNER_IDS = {1303076149160837121, 1267677795975303242}
 # 🔐 STAFF ROLES (ONLY for lookup + track)
 ALLOWED_STAFF_ROLES = [
     1484473034462199849,
-    1459718191344259155
+    1459718191344259155,
+    1468440661153026059  # mods
 ]
 
 # =========================
@@ -29,10 +33,11 @@ class Admin(commands.Cog):
         self.bot = bot
 
     # =========================
-    # 📦 TRACK ORDER
+    # 📦 ORDER DETAILS (Buttonland store)
     # =========================
-    @app_commands.command(name="track", description="Track an order")
-    async def track(self, interaction: discord.Interaction, order_number: int):
+    @app_commands.command(name="track", description="Staff: look up a Buttonland order by number")
+    @app_commands.describe(order_number="e.g. BL-20261007-7F3A2C")
+    async def track(self, interaction: discord.Interaction, order_number: str):
 
         if not has_staff_permission(interaction):
             return await interaction.response.send_message("❌ no permission", ephemeral=True)
@@ -40,48 +45,25 @@ class Admin(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            from services.shopify import sync_orders, get_tracking_info
+            order = await buttonland.staff_order(order_number.strip())
+        except ButtonlandError as error:
+            return await interaction.followup.send(f"❌ {error.message}", ephemeral=True)
 
-            orders = sync_orders()
-            order = next((o for o in orders if o.get("order_number") == order_number), None)
+        embed = order_embed(order)
+        embed.insert_field_at(0, name="👤 Customer", value=f"{order.get('customerName') or '—'}\n{order.get('email', '')}\n{order.get('shipTo', '')}"[:1000], inline=False)
+        placed = order.get("placedAt", "")
+        if placed:
+            embed.set_footer(text=f"Placed {placed[:10]} · payment {order.get('paymentStatus')} · fulfillment {order.get('fulfillmentStatus')}")
+        if order.get("attention"):
+            embed.add_field(name="⚠️ Needs attention", value="\n".join(order["attention"])[:1000], inline=False)
 
-            if not order:
-                return await interaction.followup.send("❌ order not found", ephemeral=True)
-
-            tracking = get_tracking_info(order)
-
-            embed = discord.Embed(title=f"📦 Order #{order_number}", color=0x00ff99)
-            embed.add_field(name="📧 Email", value=order.get("email", "N/A"), inline=False)
-            embed.add_field(name="💰 Total", value=order.get("total_price", "N/A"), inline=True)
-            embed.add_field(name="📦 Status", value=order.get("fulfillment_status", "N/A"), inline=True)
-            embed.add_field(name="🕒 Created", value=order.get("created_at", "N/A"), inline=False)
-
-            items = order.get("line_items", [])
-            if items:
-                embed.add_field(
-                    name="🛒 Items",
-                    value="\n".join([f"{i.get('quantity')}x {i.get('title')}" for i in items])[:1000],
-                    inline=False
-                )
-
-            if tracking:
-                embed.add_field(
-                    name="🚚 Tracking",
-                    value=f"{tracking.get('company')}\n{tracking.get('number')}\n{tracking.get('url')}",
-                    inline=False
-                )
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        except Exception as e:
-            print("Track error:", e)
-            await interaction.followup.send("❌ error fetching order", ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # =========================
-    # 📧 LOOKUP EMAIL
+    # 🔎 SEARCH ORDERS
     # =========================
-    @app_commands.command(name="lookup", description="Lookup orders by email")
-    async def lookup(self, interaction: discord.Interaction, email: str):
+    @app_commands.command(name="lookup", description="Staff: find orders by email, name, order number or tracking number")
+    async def lookup(self, interaction: discord.Interaction, query: str):
 
         if not has_staff_permission(interaction):
             return await interaction.response.send_message("❌ no permission", ephemeral=True)
@@ -89,54 +71,30 @@ class Admin(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            from services.shopify import sync_orders
+            orders = await buttonland.staff_search(query.strip())
+        except ButtonlandError as error:
+            return await interaction.followup.send(f"❌ {error.message}", ephemeral=True)
 
-            orders = sync_orders()
+        orders = [o for o in orders if o.get("isPlaced", True)]
+        if not orders:
+            return await interaction.followup.send("❌ no orders found", ephemeral=True)
 
-            user_orders = [
-                o for o in orders
-                if o.get("email", "").lower() == email.lower()
-            ]
-
-            if not user_orders:
-                return await interaction.followup.send("❌ no orders found", ephemeral=True)
-
-            first_order = user_orders[0]
-            shipping = first_order.get("shipping_address") or {}
-
-            name = shipping.get("name", "N/A")
-            address = f"{shipping.get('address1', '')}\n{shipping.get('city', '')}, {shipping.get('province', '')} {shipping.get('zip', '')}\n{shipping.get('country', '')}"
-
-            embed = discord.Embed(
-                title=f"📧 Customer Lookup",
-                description=f"**{email}**",
-                color=0x00ff99
+        embed = discord.Embed(title="🔎 Order search", description=f"`{query[:80]}`", color=0xE5231F)
+        total = 0.0
+        for o in orders[:10]:
+            total += float(o.get("total") or 0)
+            embed.add_field(
+                name=f"📦 {o.get('orderNumber')}",
+                value=(
+                    f"{o.get('customerName') or '—'} · {o.get('email', '')}\n"
+                    f"{money(o.get('total'))} · {o.get('status')} / {o.get('fulfillmentStatus')}"
+                    f"{' · ' + o['location'] if o.get('location') else ''}"
+                )[:1000],
+                inline=False,
             )
+        embed.set_footer(text=f"{len(orders)} order(s) · {money(total)} total · /track <order> for details")
 
-            embed.add_field(name="👤 Name", value=name, inline=False)
-            embed.add_field(name="🏠 Address", value=address or "N/A", inline=False)
-
-            total = 0
-
-            for o in user_orders[:10]:
-                price = float(o.get("total_price", 0))
-                total += price
-
-                embed.add_field(
-                    name=f"📦 Order #{o.get('order_number')}",
-                    value=f"💰 ${price}\n📦 {o.get('fulfillment_status', 'unknown')}",
-                    inline=False
-                )
-
-            embed.set_footer(
-                text=f"{len(user_orders)} orders | ${round(total, 2)} total spent"
-            )
-
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        except Exception as e:
-            print("Lookup error:", e)
-            await interaction.followup.send("❌ error fetching orders", ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # =========================
     # 🌎 GIVE ALL (OWNER IDS ONLY)

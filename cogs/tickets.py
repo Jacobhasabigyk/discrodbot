@@ -1,145 +1,98 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-import os
+import asyncio
 import re
 import time
-import random
-import asyncio
-import json
 
-from openai import OpenAI
-from config import SUPPORT_ROLE, OWNER_ROLE, HEAD_MOD_ROLE, MOD_ROLE, BUYER_ROLE
-from services.shopify import sync_orders, get_tracking_info
-from services.emailer import send_verification_email
+import discord
+from discord import app_commands
+from discord.ext import commands
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from config import BUYER_ROLE, HEAD_MOD_ROLE, LOG_CHANNEL, MOD_ROLE, OWNER_ROLE, SUPPORT_ROLE
+from database import (
+    delete_ticket,
+    get_open_ticket_for,
+    get_ticket,
+    save_ticket,
+    set_ticket_paused,
+)
+from services import buttonland
+from services.buttonland import ButtonlandError
+from services.support_ai import SupportAgent
 
-# =========================
-# 🧠 STATE
-# =========================
-verified_users = {}
-verification_codes = {}
-conversation_memory = {}
-takeover_channels = set()
+# Staff = these roles, the server owner, or anyone with Administrator.
+ADMIN_ROLE = 1484473034462199849
+STAFF_ROLES = {OWNER_ROLE, HEAD_MOD_ROLE, MOD_ROLE, SUPPORT_ROLE, ADMIN_ROLE}
 
-STAFF_ROLES = {OWNER_ROLE, HEAD_MOD_ROLE, MOD_ROLE, SUPPORT_ROLE}
-# =========================
-# 🚚 SHIPPING LOCK SYSTEM
-# =========================
+# Where new refund/cancel requests from tickets are announced for staff.
+REQUEST_LOG_CHANNEL = 1485943251855867944
 
-RESTRICTED_STATES = [
-    "delaware", "new jersey", "rhode island", "district of columbia"
-]
+# Cost/abuse guard: AI replies per ticket per day before handing to staff.
+MAX_AI_REPLIES_PER_DAY = 40
 
-RESTRICTED_CITIES = [
-    # NYC + boroughs
-    "new york", "nyc", "bronx", "brooklyn", "queens", "staten island", "manhattan",
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")
+CODE_RE = re.compile(r"^\s*(\d{3})\s?-?\s?(\d{3})\s*$")
+HUMAN_RE = re.compile(r"\b(?:human|real person|live agent|support agent|representative)\b|\b(?:talk|speak) to (?:a |an |the )?(?:person|someone|staff|owner|mod)\b", re.I)
+SLURS = ["retard", "nigger", "nigga"]
 
-    # NY cities
-    "yonkers", "buffalo", "rochester", "glen oaks", "floral park",
+agent = SupportAgent()
+ticket_locks = {}
+ai_usage = {}  # channel_id -> [day, count]
 
-    # others
-    "bridgeport", "stratford", "seaside",
-    "philadelphia", "york"
-]
-
-RESTRICTED_COUNTIES = [
-    "cook county",  # chicago restriction
-    "king county"
-]
-
-# =========================
-# 🚚 SHIPPING LOCK SYSTEM
-# =========================
-
-def check_shipping(msg: str):
-    msg = msg.lower()
-
-    # 🚫 NYC + boroughs
-    if any(x in msg for x in [
-        "new york", "nyc", "bronx", "brooklyn",
-        "queens", "staten island", "manhattan"
-    ]):
-        return "❌ We do NOT ship to NYC or its boroughs due to local laws."
-
-    # 🚫 other restricted cities
-    if any(x in msg for x in [
-        "yonkers", "buffalo", "rochester",
-        "bridgeport", "stratford", "seaside",
-        "philadelphia", "york"
-    ]):
-        return "❌ We do NOT ship to that location due to local laws."
-
-    # 🚫 cook county ONLY (chicago restriction)
-    if "cook county" in msg:
-        return "❌ We do NOT ship to Cook County (Chicago area) due to local laws."
-
-    # ⚠️ chicago allowed but warn
-    if "chicago" in msg:
-        return "⚠️ We ship to Illinois, but NOT Cook County (Chicago area)."
-
-    # 🚫 restricted states
-    if any(x in msg for x in [
-        "delaware", "new jersey", "rhode island", "district of columbia"
-    ]):
-        return "❌ We do NOT ship to that state due to regulations."
-
-    # ✅ texas explicitly allowed
-    if "texas" in msg or "corpus" in msg:
-        return "✅ Yes, we DO ship to Texas, including Corpus Christi."
-
-    # 📦 generic shipping
-    if any(x in msg for x in ["ship", "shipping", "deliver"]):
-        return "📦 We ship within the United States only. Some areas are restricted due to laws."
-
-    return None
-
-try:
-    with open("data.json", "r") as f:
-        KNOWLEDGE = json.load(f)
-except:
-    KNOWLEDGE = {}
-
-# =========================
-# 📦 SHOPIFY CACHE
-# =========================
-order_cache = []
-last_sync = 0
-
-def get_orders_cached():
-    global order_cache, last_sync
-    if time.time() - last_sync > 120:
-        print("🔄 Syncing orders...")
-        order_cache = sync_orders()
-        last_sync = time.time()
-    return order_cache
-
-def find_orders_by_email(orders, email):
-    return [o for o in orders if o.get("email", "").lower() == email.lower()]
-
-def extract_order_number(msg):
-    match = re.search(r"#?(\d{3,6})", msg)
-    return int(match.group(1)) if match else None
 
 def is_staff(member):
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild and member.guild.owner_id == member.id:
+        return True
+    if member.guild_permissions.administrator:
+        return True
     return any(role.id in STAFF_ROLES for role in member.roles)
 
-def format_order(order, tracking):
-    num = order.get("order_number")
 
-    if not order.get("fulfillment_status"):
-        return f"📦 Order #{num}\n🔴 Status: Not Fulfilled"
+def money(value):
+    try:
+        return f"${float(value):.2f}"
+    except (TypeError, ValueError):
+        return "—"
 
-    if tracking:
-        return f"""📦 Order #{num}
 
-🟢 Status: Fulfilled
-🚚 {tracking.get("company")}
-📦 {tracking.get("number")}
-🔗 {tracking.get("url")}"""
+def order_embed(order, title=None):
+    embed = discord.Embed(
+        title=title or f"📦 {order.get('orderNumber')}",
+        description=f"**{order.get('statusText', 'Unknown')}**",
+        color=0xE5231F,
+    )
 
-    return f"📦 Order #{num}\n🟡 Fulfilled (no tracking yet)"
+    items = order.get("items") or []
+    if items:
+        lines = [f"{i.get('quantity')}× {i.get('name')}" + (f" ({i.get('options')})" if i.get("options") else "") for i in items]
+        embed.add_field(name="Items", value="\n".join(lines)[:1000], inline=False)
+
+    embed.add_field(name="Total", value=money(order.get("total")), inline=True)
+    if order.get("shippingMethod"):
+        embed.add_field(name="Shipping", value=order["shippingMethod"], inline=True)
+
+    for shipment in (order.get("shipments") or [])[:3]:
+        parts = [f"**{shipment.get('statusText')}**"]
+        carrier = " ".join(x for x in [shipment.get("carrier"), shipment.get("service")] if x)
+        if carrier:
+            parts.append(carrier)
+        if shipment.get("trackingNumber"):
+            number = shipment["trackingNumber"]
+            parts.append(f"[{number}]({shipment['trackingUrl']})" if shipment.get("trackingUrl") else number)
+        latest = shipment.get("latestCarrierUpdate") or {}
+        if latest.get("text"):
+            parts.append(f"Latest: {latest['text']}")
+        embed.add_field(name="Package", value="\n".join(parts)[:1000], inline=False)
+
+    for refund in (order.get("refunds") or [])[:3]:
+        embed.add_field(
+            name="Refund",
+            value=f"{money(refund.get('amount'))} · {refund.get('status')}",
+            inline=True,
+        )
+
+    return embed
+
 
 # =========================
 # 🎟 VIEWS
@@ -150,8 +103,33 @@ class CloseTicketView(discord.ui.View):
 
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await interaction.channel.delete()
+        ticket = get_ticket(interaction.channel.id)
+        owner_id = ticket["owner_id"] if ticket else None
+
+        if interaction.user.id != owner_id and not is_staff(interaction.user):
+            return await interaction.response.send_message("only the ticket owner or staff can close this.", ephemeral=True)
+
+        await interaction.response.send_message("🔒 closing this ticket in 5 seconds…")
+
+        log = interaction.client.get_channel(LOG_CHANNEL)
+        if log:
+            embed = discord.Embed(title="🎟 Ticket closed", color=0x95A5A6)
+            embed.add_field(name="Ticket", value=interaction.channel.name)
+            embed.add_field(name="Opened by", value=f"<@{owner_id}>" if owner_id else "unknown")
+            embed.add_field(name="Closed by", value=interaction.user.mention)
+            try:
+                await log.send(embed=embed)
+            except discord.HTTPException:
+                pass
+
+        await asyncio.sleep(5)
+        delete_ticket(interaction.channel.id)
+        agent.forget(interaction.channel.id)
+        try:
+            await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+        except discord.HTTPException:
+            pass
+
 
 class TicketView(discord.ui.View):
     def __init__(self, bot):
@@ -165,26 +143,46 @@ class TicketView(discord.ui.View):
         guild = interaction.guild
         user = interaction.user
 
+        # One open ticket per person.
+        for channel_id in get_open_ticket_for(user.id):
+            existing = guild.get_channel(channel_id)
+            if existing:
+                return await interaction.followup.send(f"you already have a ticket open: {existing.mention}", ephemeral=True)
+            delete_ticket(channel_id)
+
         category = discord.utils.get(guild.categories, name="Tickets") or await guild.create_category("Tickets")
-        channel = await guild.create_text_channel(f"ticket-{user.name}", category=category)
 
-        await channel.set_permissions(guild.default_role, view_channel=False)
-        await channel.set_permissions(user, view_channel=True)
+        # Private from the start: only the customer, staff and the bot.
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
+        }
+        for role_id in STAFF_ROLES:
+            role = guild.get_role(role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
 
-        support = guild.get_role(SUPPORT_ROLE)
-        if support:
-            await channel.set_permissions(support, view_channel=True)
+        safe_name = re.sub(r"[^a-z0-9-]", "", user.name.lower())[:80] or str(user.id)
+        channel = await guild.create_text_channel(f"ticket-{safe_name}", category=category, overwrites=overwrites)
+        save_ticket(channel.id, user.id, time.time())
 
-        await interaction.followup.send(f"✅ {channel.mention}", ephemeral=True)
+        await interaction.followup.send(f"✅ your ticket: {channel.mention}", ephemeral=True)
 
-        await channel.send(
-            embed=discord.Embed(
-                title="🎟 ButtonLand Support",
-                description="Hey, Im the buttonland support ai chatbot i can help you today.",
-                color=0x00ff00
+        embed = discord.Embed(
+            title="🎟 ButtonLand Support",
+            description=(
+                f"hey {user.mention}! i'm Buttonland's AI support assistant.\n\n"
+                "**i can:**\n"
+                "• check your order and tracking (i'll email you a code to confirm it's yours)\n"
+                "• answer shipping, returns and product questions\n"
+                "• send a refund or cancellation request to the owner\n\n"
+                "what's up? say **human** any time to get a team member."
             ),
-            view=CloseTicketView()
+            color=0xE5231F,
         )
+        await channel.send(embed=embed, view=CloseTicketView())
+
 
 # =========================
 # 🎟 COG
@@ -193,282 +191,231 @@ class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="takeover")
+    def cog_unload(self):
+        asyncio.create_task(buttonland.close())
+
+    # -------------------------
+    # Staff controls
+    # -------------------------
+    @app_commands.command(name="takeover", description="Staff: stop the AI in this ticket")
     async def takeover(self, interaction: discord.Interaction):
         if not is_staff(interaction.user):
-            await interaction.response.send_message("❌ no permission", ephemeral=True)
-            return
+            return await interaction.response.send_message("❌ no permission", ephemeral=True)
+        if not get_ticket(interaction.channel.id):
+            return await interaction.response.send_message("this isn't a ticket.", ephemeral=True)
+        set_ticket_paused(interaction.channel.id, True)
+        await interaction.response.send_message("🛑 staff has this ticket. the AI is paused (`/resume` to turn it back on).")
 
-        takeover_channels.add(interaction.channel.id)
-        await interaction.response.send_message("🛑 staff takeover")
-
-    @app_commands.command(name="resume")
+    @app_commands.command(name="resume", description="Staff: let the AI answer in this ticket again")
     async def resume(self, interaction: discord.Interaction):
         if not is_staff(interaction.user):
-            await interaction.response.send_message("❌ no permission", ephemeral=True)
+            return await interaction.response.send_message("❌ no permission", ephemeral=True)
+        if not get_ticket(interaction.channel.id):
+            return await interaction.response.send_message("this isn't a ticket.", ephemeral=True)
+        set_ticket_paused(interaction.channel.id, False)
+        await interaction.response.send_message("🤖 AI assistant is back on.")
+
+    # -------------------------
+    # Customer commands
+    # -------------------------
+    @app_commands.command(name="myorders", description="See your Buttonland orders (after verifying your email in a ticket)")
+    async def myorders(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            data = await buttonland.customer(interaction.user.id)
+        except ButtonlandError as error:
+            return await interaction.followup.send(f"❌ {error.message}", ephemeral=True)
+
+        if not data.get("linked"):
+            return await interaction.followup.send("you haven't verified an email yet. open a ticket and send the email you ordered with 👍", ephemeral=True)
+
+        orders = data.get("orders") or []
+        if not orders:
+            return await interaction.followup.send(f"no orders found for {data.get('email')}.", ephemeral=True)
+
+        await interaction.followup.send(
+            content=f"orders for {data.get('email')}:",
+            embeds=[order_embed(order) for order in orders[:5]],
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="unlink", description="Remove the email linked to your Discord account")
+    async def unlink(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await buttonland.unlink(interaction.user.id)
+        except ButtonlandError as error:
+            return await interaction.followup.send(f"❌ {error.message}", ephemeral=True)
+        await interaction.followup.send("done, your email is no longer linked.", ephemeral=True)
+
+    # -------------------------
+    # Helpers
+    # -------------------------
+    async def give_buyer_role(self, member, orders):
+        if not orders or not isinstance(member, discord.Member):
             return
+        role = member.guild.get_role(BUYER_ROLE)
+        if role and role not in member.roles:
+            try:
+                await member.add_roles(role, reason="Verified Buttonland customer")
+            except discord.HTTPException:
+                pass
 
-        takeover_channels.discard(interaction.channel.id)
-        await interaction.response.send_message("🤖 AI back")
+    async def hand_off(self, channel, reason):
+        set_ticket_paused(channel.id, True)
+        role = channel.guild.get_role(SUPPORT_ROLE)
+        await channel.send(
+            f"🙋 {role.mention if role else 'staff'} — a customer needs help here.\n> {reason[:300]}",
+            allowed_mentions=discord.AllowedMentions(roles=True),
+        )
 
+    async def announce_request(self, channel, member, request):
+        log = self.bot.get_channel(REQUEST_LOG_CHANNEL)
+        if not log or not request:
+            return
+        kind = "Cancellation" if request.get("type") == "cancel" else "Refund"
+        embed = discord.Embed(title=f"📝 {kind} request from Discord", color=0xF5A623)
+        embed.add_field(name="Order", value=request.get("orderNumber", "?"))
+        if request.get("amount"):
+            embed.add_field(name="Amount (suggested)", value=money(request["amount"]))
+        embed.add_field(name="Customer", value=member.mention)
+        embed.add_field(name="Ticket", value=channel.mention)
+        embed.set_footer(text="Review it in the admin panel → Requests. Nothing has been refunded yet.")
+        try:
+            await log.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
+    def ai_allowed(self, channel_id):
+        day = time.strftime("%Y-%m-%d")
+        entry = ai_usage.get(channel_id)
+        if not entry or entry[0] != day:
+            entry = [day, 0]
+        entry[1] += 1
+        ai_usage[channel_id] = entry
+        return entry[1] <= MAX_AI_REPLIES_PER_DAY
+
+    # -------------------------
+    # Ticket messages
+    # -------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
         if message.interaction_metadata or message.content.startswith("/"):
             return
-            
-        if message.author.bot:
-            return
 
-        if not message.channel.name.startswith("ticket-"):
-            return
+        channel = message.channel
+        ticket = get_ticket(channel.id)
 
-        channel_id = message.channel.id
-        content = message.content
-        msg = content.lower()
-
-        # =========================
-        # 🔄 AUTO LOAD VERIFIED USER (DB)
-        # =========================
-        from database import get_verified_user, get_orders_by_email, get_order_from_db, save_verified_user
-
-        if channel_id not in verified_users:
-            verified_users[channel_id] = {}
-
-        saved_email = get_verified_user(message.author.id)
-
-        if saved_email and "orders" not in verified_users[channel_id]:
-            orders = get_orders_by_email(saved_email)
-            if orders:
-                verified_users[channel_id]["orders"] = orders
-
-        # 🛑 HARD STOP IF STAFF TOOK OVER
-        if channel_id in takeover_channels:
-            return
-
-        # =========================
-        # 🚚 SHIPPING CHECK
-        # =========================
-        shipping_reply = check_shipping(msg)
-        if shipping_reply:
-            await message.channel.send(shipping_reply)
-            return
-
-        # =========================
-        # 🚨 STAFF ESCALATION
-        # =========================
-
-
-        # =========================
-        # ⚠️ TOXIC FILTER
-        # =========================
-        if any(x in msg for x in ["retard", "nigger", "nigga", "fuck you"]):
-            await message.channel.send("⚠️ keep it respectful or staff will step in")
-            return
-
-        # =========================
-        # 📧 EMAIL VERIFY (DB)
-        # =========================
-        email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}", msg)
-        if email_match:
-            email = email_match.group(0)
-
-            orders = get_orders_by_email(email)
-
-            if not orders:
-                await message.channel.send("❌ no orders found with that email")
+        if not ticket:
+            # Tickets opened before this version: adopt them.
+            if not getattr(channel, "name", "").startswith("ticket-") or is_staff(message.author):
                 return
+            save_ticket(channel.id, message.author.id, time.time())
+            ticket = get_ticket(channel.id)
 
-            code = str(random.randint(100000, 999999))
+        # A staff member speaking = they've got it; the AI steps back.
+        if message.author.id != ticket["owner_id"]:
+            if is_staff(message.author) and not ticket["ai_paused"]:
+                set_ticket_paused(channel.id, True)
+                await channel.send("🛑 a team member has this ticket, the AI is paused. (`/resume` to turn it back on)")
+            return
 
-            verification_codes[channel_id] = {
-                "code": code,
-                "orders": orders,
-                "expires": time.time() + 600
+        if ticket["ai_paused"]:
+            return
+
+        content = message.content.strip()
+        if not content:
+            return
+
+        lowered = content.lower()
+        if any(word in lowered for word in SLURS):
+            await channel.send("⚠️ keep it respectful or staff will step in")
+            return
+
+        lock = ticket_locks.setdefault(channel.id, asyncio.Lock())
+        if lock.locked():
+            return  # still answering the previous message
+
+        async with lock:
+            ctx = {
+                "channel_id": channel.id,
+                "user_id": message.author.id,
+                "user_name": message.author.display_name,
+                "channel_name": channel.name,
             }
 
-            send_verification_email(email, code)
-
-            await message.channel.send("📧 i sent a code, send it here 👍")
-            return
-
-        # =========================
-        # 🔐 VERIFY CODE
-        # =========================
-        if msg.isdigit() and len(msg) == 6:
-            data = verification_codes.get(channel_id)
-
-            if not data:
-                return
-
-            if time.time() > data["expires"]:
-                verification_codes.pop(channel_id, None)
-                await message.channel.send("❌ code expired")
-                return
-
-            if msg != data["code"]:
-                await message.channel.send("❌ wrong code")
-                return
-
-            verified_users[channel_id]["orders"] = data["orders"]
-            verification_codes.pop(channel_id, None)
-
-            save_verified_user(message.author.id, data["orders"][0].get("email"))
-
-            role = message.guild.get_role(BUYER_ROLE)
-            if role:
+            # Fast path: the 6-digit code from the email.
+            code_match = CODE_RE.match(content)
+            if code_match:
+                code = code_match.group(1) + code_match.group(2)
+                agent.remember(channel.id, "user", content)
                 try:
-                    await message.author.add_roles(role)
-                except:
+                    data = await buttonland.confirm_verification(message.author.id, message.author.display_name, code)
+                except ButtonlandError as error:
+                    reply = f"❌ {error.message}"
+                    agent.remember(channel.id, "assistant", reply)
+                    return await channel.send(reply)
+
+                orders = data.get("orders") or []
+                await self.give_buyer_role(message.author, orders)
+                reply = f"✅ verified ({data.get('email')})! " + (
+                    "here's your latest order 👇 ask me anything about it." if orders else "i don't see any orders on that email yet."
+                )
+                agent.remember(channel.id, "assistant", f"{reply} [verified; {len(orders)} orders visible via get_my_orders]")
+                return await channel.send(reply, embed=order_embed(orders[0]) if orders else None)
+
+            # Fast path: they sent the email they ordered with.
+            email_match = EMAIL_RE.search(content)
+            if email_match and len(content) <= len(email_match.group(0)) + 40:
+                agent.remember(channel.id, "user", content)
+                try:
+                    note = await buttonland.start_verification(message.author.id, message.author.display_name, email_match.group(0))
+                    reply = f"📧 {note} paste the code here (check spam too)."
+                except ButtonlandError as error:
+                    reply = f"❌ {error.message}"
+                agent.remember(channel.id, "assistant", reply)
+                return await channel.send(reply)
+
+            # Fast path: they asked for a person.
+            if HUMAN_RE.search(content):
+                agent.remember(channel.id, "user", content)
+                agent.remember(channel.id, "assistant", "got it, getting a team member for you.")
+                await channel.send("got it, getting a team member for you 👍")
+                return await self.hand_off(channel, f"Customer asked for a person: “{content[:200]}”")
+
+            if not agent.available:
+                return await self.hand_off(channel, "AI assistant isn't configured; customer is waiting.")
+
+            if not self.ai_allowed(channel.id):
+                await channel.send("i've answered a lot here today, so i'm bringing in a team member.")
+                return await self.hand_off(channel, "Daily AI reply limit reached for this ticket.")
+
+            async with channel.typing():
+                try:
+                    result = await agent.respond(ctx, content)
+                except Exception as error:  # API outage etc.
+                    print("AI error:", repr(error))
+                    await channel.send("hmm, i'm having trouble right now. getting a team member for you.")
+                    return await self.hand_off(channel, "AI assistant error; customer is waiting.")
+
+            if result.get("text"):
+                await channel.send(result["text"], allowed_mentions=discord.AllowedMentions.none())
+
+            if result.get("verified"):
+                try:
+                    data = await buttonland.customer(message.author.id)
+                    await self.give_buyer_role(message.author, data.get("orders") or [])
+                except ButtonlandError:
                     pass
 
-            await message.channel.send("✅ verified 👍")
+            if result.get("request_filed"):
+                await self.announce_request(channel, message.author, result["request_filed"])
 
-            order = data["orders"][0]
-            tracking = order.get("tracking")
-            await message.channel.send(format_order(order, tracking))
-            return
+            if result.get("handoff"):
+                await self.hand_off(channel, result["handoff"])
 
-        # =========================
-        # 🔒 SECURE ORDER TRACK (FAST DB)
-        # =========================
-        order_number = extract_order_number(msg)
-
-        if order_number:
-            user_orders = verified_users.get(channel_id, {}).get("orders")
-
-            if not user_orders:
-                await message.channel.send("❌ Please verify your order first by sending your email.")
-                return
-
-            order = next((o for o in user_orders if o.get("order_number") == order_number), None)
-
-            if not order:
-                await message.channel.send(
-                    "❌ That order is not linked to your account.\n"
-                    "If you need help, send your email to verify 👍"
-                )
-                return
-
-            db_order = get_order_from_db(order_number)
-
-            if db_order:
-                await message.channel.send(format_order(db_order, db_order.get("tracking")))
-                return
-
-            await message.channel.send("⚠️ Order not cached yet, try again in a moment.")
-            return
-
-        # =========================
-        # 📦 QUICK TRACK
-        # =========================
-        if "track" in msg or "where" in msg:
-            user_orders = verified_users.get(channel_id, {}).get("orders")
-            if user_orders:
-                order = user_orders[0]
-                await message.channel.send(format_order(order, order.get("tracking")))
-                return
-
-        # =========================
-        # 🤖 AI RESPONSE
-        # =========================
-        try:
-            await message.channel.typing()
-
-            # 🧠 init memory
-            if channel_id not in conversation_memory:
-                conversation_memory[channel_id] = []
-
-            history = conversation_memory[channel_id]
-
-            # =========================
-            # 🚨 SMART ESCALATION
-            # =========================
-            trigger_words = [
-                "refund", "money back", "cancel order",
-                "scam", "wtf", "this is bullshit",
-                "human", "real person", "support agent",
-                "help me", "not working", "issue"
-            ]
-
-            if any(word in msg for word in trigger_words):
-
-                role = message.guild.get_role(SUPPORT_ROLE)
-
-                # 💸 refund specific
-                if "refund" in msg or "money back" in msg:
-                    await message.channel.send(
-                        "💸 i got you — a support agent will be here shortly.\n"
-                        "👉 in the meantime, use `/refund` to speed up your request 👍"
-                    )
-                else:
-                    await message.channel.send(
-                        f"🛑 got you — a real support agent will help you shortly\n"
-                        f"{role.mention if role else ''}"
-                    )
-
-                takeover_channels.add(channel_id)
-                return
-
-            # =========================
-            # 🧠 USER CONTEXT
-            # =========================
-            user_orders = verified_users.get(channel_id, {}).get("orders")
-            user_context = "User not verified"
-
-            if user_orders:
-                user_context = f"User verified. Order #{user_orders[0].get('order_number')}"
-
-            # =========================
-            # 📚 KNOWLEDGE MATCH
-            # =========================
-            knowledge_hits = [v for k, v in KNOWLEDGE.items() if k in msg]
-
-            # =========================
-            # 🧠 STORE MEMORY
-            # =========================
-            history.append({"role": "user", "content": content})
-            history = history[-12:]
-            conversation_memory[channel_id] = history
-
-            # =========================
-            # 🤖 AI RESPONSE
-            # =========================
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": f"""
-You are ButtonLand support.
-
-STYLE:
-- casual, short, human
-- helpful, not robotic
-
-RULES:
-- if refund is mentioned → suggest using /refund
-- if user sounds frustrated → suggest human support
-- do NOT repeat yourself
-
-{user_context}
-
-Knowledge:
-{knowledge_hits}
-"""
-                    },
-                    *history
-                ]
-            )
-
-            reply = response.choices[0].message.content[:1000]
-
-            # 🧠 save AI reply
-            history.append({"role": "assistant", "content": reply})
-
-            await message.channel.send(reply)
-
-        except Exception as e:
-            print("AI error:", e)
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))

@@ -1,5 +1,4 @@
 import sqlite3
-import time
 
 conn = sqlite3.connect("warnings.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -26,60 +25,27 @@ CREATE TABLE IF NOT EXISTS warnings (
 """)
 
 # ===============================
-# 🛍 SHOPIFY TOKENS
+# 🎟 TICKETS (survive bot restarts)
 # ===============================
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS shopify (
-    shop TEXT PRIMARY KEY,
-    access_token TEXT
+CREATE TABLE IF NOT EXISTS tickets (
+    channel_id TEXT PRIMARY KEY,
+    owner_id TEXT,
+    ai_paused INTEGER DEFAULT 0,
+    created_at REAL
 )
 """)
 
 # ===============================
-# 🔒 VERIFIED USERS
+# 🧹 Shopify is gone. Remove its old data: the saved Shopify access token,
+# the cached Shopify orders, and emails "verified" against Shopify orders.
+# Customers now verify against the Buttonland store itself.
 # ===============================
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS verified (
-    user_id TEXT PRIMARY KEY,
-    email TEXT
-)
-""")
-
-# ===============================
-# 📦 ORDER CACHE (NEW 🔥)
-# ===============================
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS orders (
-    order_number INTEGER PRIMARY KEY,
-    email TEXT,
-    fulfillment_status TEXT,
-    tracking_company TEXT,
-    tracking_number TEXT,
-    tracking_url TEXT,
-    updated_at REAL
-)
-""")
+cursor.execute("DROP TABLE IF EXISTS shopify")
+cursor.execute("DROP TABLE IF EXISTS orders")
+cursor.execute("DROP TABLE IF EXISTS verified")
 
 conn.commit()
-
-# ===============================
-# 🛍 SHOPIFY FUNCTIONS
-# ===============================
-def save_shopify_token(shop, token):
-    cursor.execute(
-        "INSERT OR REPLACE INTO shopify (shop, access_token) VALUES (?, ?)",
-        (shop, token)
-    )
-    conn.commit()
-
-
-def get_shopify_token(shop):
-    cursor.execute(
-        "SELECT access_token FROM shopify WHERE shop=?",
-        (shop,)
-    )
-    row = cursor.fetchone()
-    return row[0] if row else None
 
 
 # ===============================
@@ -114,103 +80,43 @@ def update_balance(user_id, amount):
 
 
 # ===============================
-# 🔒 VERIFIED USER FUNCTIONS
+# 🎟 TICKET FUNCTIONS
 # ===============================
-def save_verified_user(user_id, email):
+def save_ticket(channel_id, owner_id, created_at):
     cursor.execute(
-        "INSERT OR REPLACE INTO verified (user_id, email) VALUES (?, ?)",
-        (str(user_id), email)
+        "INSERT OR REPLACE INTO tickets (channel_id, owner_id, ai_paused, created_at) VALUES (?, ?, 0, ?)",
+        (str(channel_id), str(owner_id), created_at)
     )
     conn.commit()
 
 
-def get_verified_user(user_id):
+def get_ticket(channel_id):
     cursor.execute(
-        "SELECT email FROM verified WHERE user_id=?",
-        (str(user_id),)
+        "SELECT owner_id, ai_paused FROM tickets WHERE channel_id=?",
+        (str(channel_id),)
     )
     row = cursor.fetchone()
-    return row[0] if row else None
-
-
-def remove_verified_user(user_id):
-    cursor.execute(
-        "DELETE FROM verified WHERE user_id=?",
-        (str(user_id),)
-    )
-    conn.commit()
-
-
-# ===============================
-# 📦 ORDER CACHE FUNCTIONS (NEW 🔥)
-# ===============================
-def save_orders_to_db(orders, get_tracking_info):
-    for o in orders:
-        tracking = get_tracking_info(o) or {}
-
-        cursor.execute("""
-        INSERT OR REPLACE INTO orders (
-            order_number, email, fulfillment_status,
-            tracking_company, tracking_number, tracking_url, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            o.get("order_number"),
-            o.get("email"),
-            o.get("fulfillment_status"),
-            tracking.get("company"),
-            tracking.get("number"),
-            tracking.get("url"),
-            time.time()
-        ))
-
-    conn.commit()
-
-
-def get_order_from_db(order_number):
-    cursor.execute(
-        "SELECT * FROM orders WHERE order_number=?",
-        (order_number,)
-    )
-    row = cursor.fetchone()
-
     if not row:
         return None
-
-    return {
-        "order_number": row[0],
-        "email": row[1],
-        "fulfillment_status": row[2],
-        "tracking": {
-            "company": row[3],
-            "number": row[4],
-            "url": row[5]
-        }
-    }
+    return {"owner_id": int(row[0]), "ai_paused": bool(row[1])}
 
 
-def get_orders_by_email(email):
+def get_open_ticket_for(owner_id):
     cursor.execute(
-        "SELECT * FROM orders WHERE email=?",
-        (email,)
+        "SELECT channel_id FROM tickets WHERE owner_id=?",
+        (str(owner_id),)
     )
-    rows = cursor.fetchall()
-
-    return [
-        {
-            "order_number": r[0],
-            "email": r[1],
-            "fulfillment_status": r[2],
-            "tracking": {
-                "company": r[3],
-                "number": r[4],
-                "url": r[5]
-            }
-        }
-        for r in rows
-    ]
+    return [int(row[0]) for row in cursor.fetchall()]
 
 
-def get_last_order_update():
-    cursor.execute("SELECT MAX(updated_at) FROM orders")
-    row = cursor.fetchone()
-    return row[0] if row and row[0] else 0
+def set_ticket_paused(channel_id, paused):
+    cursor.execute(
+        "UPDATE tickets SET ai_paused=? WHERE channel_id=?",
+        (1 if paused else 0, str(channel_id))
+    )
+    conn.commit()
+
+
+def delete_ticket(channel_id):
+    cursor.execute("DELETE FROM tickets WHERE channel_id=?", (str(channel_id),))
+    conn.commit()
