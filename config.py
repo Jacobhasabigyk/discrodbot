@@ -1,8 +1,8 @@
 import os
 from dotenv import load_dotenv
 
-# .env wins over any old DISCORD_TOKEN etc. set in Windows itself.
-load_dotenv(override=True)
+# Settings on the host (e.g. Render's Environment tab) win over .env.
+load_dotenv()
 
 # ================================
 # Discord
@@ -16,6 +16,9 @@ SUPPORT_ROLE = 1475784384404783176
 BUYER_ROLE = 1459718958931513354
 
 LOG_CHANNEL = 1480454191666429952
+
+# #support: the ticket panel lives here and tickets are private threads in it.
+SUPPORT_CHANNEL_ID = 1476797889509593211
 
 # ================================
 # Buttonland store API (replaces Shopify)

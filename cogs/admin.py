@@ -6,7 +6,7 @@ from database import cursor, conn, update_balance
 from utils.permissions import has_role_interaction
 from services import buttonland
 from services.buttonland import ButtonlandError
-from cogs.tickets import money, order_embed
+from utils.embeds import money, order_embed
 
 # 👑 OWNER IDS ONLY (TRUE OWNERS)
 OWNER_IDS = {1303076149160837121, 1267677795975303242}

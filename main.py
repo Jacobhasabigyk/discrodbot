@@ -1,10 +1,11 @@
 import asyncio
+import os
 
 import discord
+from aiohttp import web
 from discord.ext import commands
 
 from config import TOKEN
-from cogs.tickets import CloseTicketView, TicketView
 from services import buttonland
 
 # ================================
@@ -13,8 +14,6 @@ from services import buttonland
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-
-PANEL_CHANNEL_ID = 1476797889509593211
 
 # ================================
 # 🤖 BOT SETUP
@@ -77,12 +76,6 @@ async def sync_commands():
 async def on_ready():
     log("Bot connected to Discord")
 
-    if not hasattr(bot, "views_loaded"):
-        bot.views_loaded = True
-        bot.add_view(TicketView(bot))
-        bot.add_view(CloseTicketView())
-        log("✅ Persistent views loaded")
-
     # Check the store connection once at startup (no secrets printed).
     if not hasattr(bot, "store_checked"):
         bot.store_checked = True
@@ -95,29 +88,7 @@ async def on_ready():
             except Exception as e:
                 log(f"⚠️ Store API not reachable yet: {e}")
 
-    # 🎟 PANEL SEND
-    try:
-        channel = bot.get_channel(PANEL_CHANNEL_ID)
-
-        if channel:
-            async for msg in channel.history(limit=20):
-                if msg.author == bot.user and msg.components:
-                    log("✅ Panel already exists")
-                    break
-            else:
-                await channel.send(
-                    embed=discord.Embed(
-                        title="🎟 ButtonLand Support",
-                        description="Click below to open a support ticket.\n\nWe can help with orders, tracking, returns, refunds, and product questions.",
-                        color=0xE5231F
-                    ),
-                    view=TicketView(bot)
-                )
-                log("✅ Panel sent")
-
-    except Exception as e:
-        log("❌ Panel send failed")
-        print(e)
+    # The ticket panel is posted/updated by cogs/tickets.py.
 
     await sync_commands()
 
@@ -147,14 +118,46 @@ async def start_bot():
         await bot.start(TOKEN)
 
 
+# ================================
+# 🌐 HEALTH CHECK (for hosts like Render "Web Service")
+# Render keeps restarting a web service that never opens a port. If the
+# host gives us a PORT, answer on it so the service counts as healthy.
+# ================================
+async def start_health_server():
+    port = os.getenv("PORT")
+    if not port:
+        return
+
+    async def health(request):
+        ready = bot.is_ready() if not bot.is_closed() else False
+        return web.Response(text="ok" if ready else "starting")
+
+    app = web.Application()
+    app.router.add_get("/", health)
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(port)).start()
+    log(f"🌐 Health check listening on port {port}")
+
+
 async def main():
     log("Booting bot...")
+
+    await start_health_server()
+
+    if not TOKEN:
+        print("❌ DISCORD_TOKEN is not set. Add it to .env or your host's environment variables.")
 
     retry_delay = 30
 
     while True:
         try:
             await start_bot()
+        except discord.LoginFailure as e:
+            print("❌ Discord rejected the token:", e)
+            print("   Reset it in the Discord Developer Portal (Bot > Reset Token) and set DISCORD_TOKEN again.")
+            await asyncio.sleep(300)
         except Exception as e:
             print("❌ Bot crashed:", e)
             print(f"⏳ Waiting {retry_delay}s before reconnect...")
