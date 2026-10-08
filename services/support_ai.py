@@ -135,7 +135,7 @@ STORE FACTS (live from the store; these are the only policies that exist):
 
 HOW TO HELP
 - Only say things that come from the store facts above or from tool results. If you don't know, say so and offer a staff member. Never make up order details, tracking, dates, stock, prices, discounts or policies.
-- Order questions ("where's my order", tracking, status): call get_my_orders. If they aren't verified yet, ask for the email they ordered with and call send_verification_code, then ask them to paste the 6-digit code and call check_verification_code. Never say whether an email has orders. Never ask for passwords or payment details.
+- Order questions ("where's my order", tracking, status): ALWAYS call get_my_orders first. If it says verified, answer from it and never mention codes. Only if it says not verified: ask for the email they ordered with and call send_verification_code, then ask them to paste the 6-digit code. Codes work once; a code the bot already accepted is not "expired". Never tell them a verification was wrong unless get_my_orders says not verified. Never say whether an email has orders. Never ask for passwords or payment details.
 - Explain statuses plainly. "Label created" means it's packed or being packed but the carrier hasn't scanned it yet, so it is NOT shipped. Share the tracking link when there is one. Don't promise delivery dates; carrier estimates are estimates.
 - Products, prices, stock, "does this fit my ___": use search_products. Only claim compatibility the results list. If it isn't listed, say you're not sure and offer staff.
 - Refunds/returns/cancellations: you can't refund anything yourself. Explain the policy. If they want to go ahead, make sure you know which order and why, confirm it with them, then call file_refund_or_cancel_request. Tell them the owner reviews it and nothing has been refunded yet. Cancelling is only possible before a shipping label exists; after that it's a return.
@@ -154,6 +154,7 @@ class SupportAgent:
         self.api = api
         self.model = model
         self.histories = {}
+        self.codes_sent = {}
         if client is not None:
             self.client = client
         elif ANTHROPIC_API_KEY:
@@ -183,6 +184,7 @@ class SupportAgent:
 
     def forget(self, channel_id):
         self.histories.pop(channel_id, None)
+        self.codes_sent.pop(channel_id, None)
 
     # --------------------------------------------------
     # Tools
@@ -206,11 +208,29 @@ class SupportAgent:
                 return {"verified": True, "email": data.get("email"), "orders": data.get("orders") or []}
 
             if name == "send_verification_code":
+                # Already verified: never email another code.
+                linked = await self.api.customer(user_id)
+                if linked.get("linked"):
+                    return {
+                        "already_verified": True,
+                        "email": linked.get("email"),
+                        "orders": linked.get("orders") or [],
+                        "note": "They are ALREADY verified. Do not send or ask for a code. Answer from these orders.",
+                    }
+                sent = self.codes_sent.get(ticket["channel_id"], 0)
+                if sent >= 2:
+                    return {"ok": False, "error": "Two codes were already sent in this ticket. Don't send more; ask them to check spam, or hand off to staff."}
                 message = await self.api.start_verification(user_id, user_name, str(args.get("email", "")).strip())
+                self.codes_sent[ticket["channel_id"]] = sent + 1
                 outcome["verification_started"] = True
                 return {"ok": True, "message": message, "next_step": "Ask them to paste the 6-digit code from the email here. It expires in 10 minutes; tell them to check spam."}
 
             if name == "check_verification_code":
+                # A code only works once. If they're already verified (for
+                # example the bot already accepted this code), just say so.
+                linked = await self.api.customer(user_id)
+                if linked.get("linked"):
+                    return {"verified": True, "email": linked.get("email"), "orders": linked.get("orders") or [], "note": "Already verified; the code was accepted earlier."}
                 data = await self.api.confirm_verification(user_id, user_name, str(args.get("code", "")).strip())
                 outcome["verified"] = True
                 return {"verified": True, "email": data.get("email"), "orders": data.get("orders") or []}

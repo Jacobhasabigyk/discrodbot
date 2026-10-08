@@ -496,12 +496,20 @@ class Tickets(commands.Cog):
                         ("Embed Links", perms.embed_links),
                         ("Attach Files", perms.attach_files),
                         ("Read Message History", perms.read_message_history),
+                        ("Manage Permissions", perms.manage_roles),
                     ] if not ok
                 ]
                 if missing:
                     print(f"[tickets] ⚠️ Bot is missing permissions in #{support.name}: {', '.join(missing)}")
+                if not support.permissions_for(support.guild.default_role).send_messages_in_threads:
+                    print(f"[tickets] ℹ️ @everyone can't 'Send Messages in Threads' in #{support.name}; the bot will allow each ticket owner individually.")
                 await self.staff_channel(support.guild, "queue")
                 await self.staff_channel(support.guild, "logs")
+                # Tickets opened before this fix: make sure their owners can type.
+                for open_ticket in open_tickets(support.guild.id):
+                    owner = support.guild.get_member(int(open_ticket["owner_id"]))
+                    if owner:
+                        await self.allow_typing(support, owner, open_ticket["id"])
         except Exception as error:
             print("[tickets] Panel setup failed:", repr(error))
 
@@ -563,6 +571,42 @@ class Tickets(commands.Cog):
                 pass
         update_ticket(ticket["id"], ping_message_id=None)
 
+    # ---------------- typing permission ----------------
+    async def allow_typing(self, support, member, ticket_id):
+        """Customers need "Send Messages in Threads" in #support to talk in
+        their ticket. If the server's settings don't give it to them, give
+        it to this one person while the ticket is open (removed on close)."""
+        if not isinstance(member, discord.Member):
+            return
+        if support.permissions_for(member).send_messages_in_threads:
+            return
+        if not support.overwrites_for(member).is_empty():
+            print(f"[tickets] ⚠️ {member} can't type in threads in #{support.name} and already has a custom permission there; fix it in channel settings.")
+            return
+        try:
+            await support.set_permissions(
+                member,
+                overwrite=discord.PermissionOverwrite(view_channel=True, send_messages_in_threads=True, read_message_history=True, attach_files=True),
+                reason=f"Ticket #{int(ticket_id):04d}: let the customer reply in their ticket",
+            )
+            set_setting(f"typing_grant_{ticket_id}", member.id)
+        except discord.HTTPException as error:
+            print(f"[tickets] ⚠️ Couldn't let {member} type in their ticket (bot needs Manage Permissions on #{support.name}): {error}")
+
+    async def remove_typing(self, ticket):
+        granted = get_setting(f"typing_grant_{ticket['id']}")
+        if not granted:
+            return
+        support = self.support_channel()
+        guild = support.guild if support else None
+        member = guild.get_member(int(granted)) if guild else None
+        if support and member:
+            try:
+                await support.set_permissions(member, overwrite=None, reason=f"Ticket {num(ticket)} closed")
+            except discord.HTTPException:
+                pass
+        set_setting(f"typing_grant_{ticket['id']}", "")
+
     # ---------------- opening ----------------
     async def open_ticket(self, interaction, topic_key, answers):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -609,6 +653,7 @@ class Tickets(commands.Cog):
 
             update_ticket(ticket_id, thread_id=str(thread.id))
             ticket = get_ticket(ticket_id)
+            await self.allow_typing(support, user, ticket_id)
 
             card = await thread.send(content=f"{user.mention}", embed=card_embed(ticket), view=card_view(ticket))
             update_ticket(ticket_id, card_message_id=str(card.id))
@@ -629,9 +674,14 @@ class Tickets(commands.Cog):
         topic = TOPICS.get(ticket["topic"], TOPICS["other"])
         ctx = self.ctx(ticket, thread, user)
 
-        if answers.get("Email") and EMAIL_RE.fullmatch(answers["Email"]):
+        already = await self.is_verified(user.id)
+        if already:
+            self.agent.remember(thread.id, "user", "(ticket form submitted)")
+            self.agent.remember(thread.id, "assistant", "[SYSTEM NOTE: this customer verified their email before; they are VERIFIED. Never ask for a code; use get_my_orders.]")
+        elif answers.get("Email") and EMAIL_RE.fullmatch(answers["Email"]):
             try:
                 await buttonland.start_verification(user.id, user.display_name, answers["Email"])
+                self.agent.codes_sent[thread.id] = self.agent.codes_sent.get(thread.id, 0) + 1
                 self.agent.remember(thread.id, "user", f"(ticket form) my email is {answers['Email']}")
                 self.agent.remember(thread.id, "assistant", "[a 6-digit verification code was emailed to them]")
             except ButtonlandError as error:
@@ -826,6 +876,7 @@ class Tickets(commands.Cog):
                 await thread.edit(archived=True, locked=True)
             except discord.HTTPException:
                 pass
+        await self.remove_typing(ticket)
         self.agent.forget(int(ticket["thread_id"] or 0))
 
     async def log_rating(self, ticket_id, stars, comment=""):
@@ -991,13 +1042,22 @@ class Tickets(commands.Cog):
                 orders = data.get("orders") or []
                 await self.give_buyer_role(author, orders)
                 reply = f"✅ verified ({data.get('email')})! " + ("here's your latest order 👇 ask me anything about it." if orders else "i don't see any orders on that email yet.")
-                self.agent.remember(thread.id, "assistant", f"{reply} [verified; {len(orders)} orders visible via get_my_orders]")
+                self.agent.remember(thread.id, "assistant", f"{reply} [SYSTEM NOTE: the customer is now VERIFIED and the code was used up. Never ask for or check a code again; call get_my_orders for any order question.]")
                 update_ticket(ticket["id"], last_reply_at=time.time())
                 return await thread.send(reply, embed=order_embed(orders[0]) if orders else None)
 
             email = EMAIL_RE.search(content)
             if email and len(content) <= len(email.group(0)) + 40:
                 self.agent.remember(thread.id, "user", content)
+                if await self.is_verified(author.id):
+                    reply = "you're already verified ✅ ask me anything about your order. (to switch to a different email, use `/unlink` first)"
+                    self.agent.remember(thread.id, "assistant", reply)
+                    return await thread.send(reply)
+                if self.agent.codes_sent.get(thread.id, 0) >= 3:
+                    reply = "i've already sent a few codes in this ticket. check your spam folder, or say **human** and a team member will help."
+                    self.agent.remember(thread.id, "assistant", reply)
+                    return await thread.send(reply)
+                self.agent.codes_sent[thread.id] = self.agent.codes_sent.get(thread.id, 0) + 1
                 try:
                     note = await buttonland.start_verification(author.id, author.display_name, email.group(0))
                     reply = f"📧 {note} paste the code here (check spam too)."
@@ -1071,6 +1131,12 @@ class Tickets(commands.Cog):
         await self.bot.wait_until_ready()
 
     # ---------------- misc helpers ----------------
+    async def is_verified(self, user_id):
+        try:
+            return bool((await buttonland.customer(user_id)).get("linked"))
+        except ButtonlandError:
+            return False
+
     async def give_buyer_role(self, member, orders):
         if not orders or not isinstance(member, discord.Member):
             return
