@@ -41,6 +41,7 @@ COGS = [
     "cogs.logging",
     "cogs.tickets",
     "cogs.refunds",
+    "cogs.giveaways",
 ]
 
 

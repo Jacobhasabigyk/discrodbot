@@ -136,6 +136,18 @@ async def main():
     assert out.get("verified") and "BL-20261007-7F3A2C" in out["text"]
     check_alternation(claude.requests[-1]["messages"])
 
+    # 3b. Already verified: the AI can't send another code or re-check an old one.
+    sends = len([c for c in api.calls if c[0] == "start"])
+    claude.script = [
+        ([tool("v1", "check_verification_code", {"code": "123456"}), tool("v2", "send_verification_code", {"email": "bo@example.com"})], "tool_use"),
+        ([text("you're all set, it's shipped.")], "end_turn"),
+    ]
+    out = await agent.respond(ticket, "so is it delivered?")
+    results = claude.requests[-1]["messages"][-1]["content"]
+    assert '"verified": true' in results[0]["content"] and "already_verified" in results[1]["content"]
+    assert len([c for c in api.calls if c[0] == "start"]) == sends, "no new email"
+    assert len([c for c in api.calls if c[0] == "confirm"]) == 2, "old code not re-checked"
+
     # 4. Refund: files a real request (owner reviews), tool results reach the model.
     claude.script = [
         ([text("checking"), tool("t5", "file_refund_or_cancel_request", {"order_number": "BL-20261007-7F3A2C", "type": "refund", "reason": "arrived broken"})], "tool_use"),

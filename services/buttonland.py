@@ -139,3 +139,91 @@ async def staff_order(order_number):
 async def staff_search(query):
     data = await _call("GET", "/staff/search", params={"q": query})
     return data.get("orders") or []
+
+
+# ------------------------------------------------------
+# Giveaways (owner / head mod commands + Enter / Claim buttons)
+# ------------------------------------------------------
+
+async def giveaway_prizes(query=""):
+    data = await _call("GET", "/giveaways/prizes", params={"q": query[:60]})
+    return data.get("prizes", [])
+
+
+async def create_giveaway(**fields):
+    data = await _call("POST", "/giveaways", json=fields)
+    return data.get("giveaway")
+
+
+async def list_giveaways(status=""):
+    data = await _call("GET", "/giveaways", params={"status": status} if status else None)
+    return data.get("giveaways", [])
+
+
+async def get_giveaway(giveaway_id):
+    data = await _call("GET", f"/giveaways/{giveaway_id}")
+    return data.get("giveaway")
+
+
+async def set_giveaway_message(giveaway_id, message_id):
+    await _call("PATCH", f"/giveaways/{giveaway_id}/message", json={"messageId": str(message_id)})
+
+
+async def enter_giveaway(giveaway_id, discord_user_id, discord_name):
+    return await _call("POST", f"/giveaways/{giveaway_id}/entries", json={"discordUserId": str(discord_user_id), "discordName": str(discord_name)[:80]})
+
+
+async def leave_giveaway(giveaway_id, discord_user_id):
+    return await _call("DELETE", f"/giveaways/{giveaway_id}/entries/{discord_user_id}")
+
+
+async def end_giveaway(giveaway_id, actor_name=""):
+    return await _call("POST", f"/giveaways/{giveaway_id}/end", json={"actorName": actor_name})
+
+
+async def cancel_giveaway(giveaway_id, actor_name=""):
+    return await _call("POST", f"/giveaways/{giveaway_id}/cancel", json={"actorName": actor_name})
+
+
+async def giveaway_announced(giveaway_id, message_id=None):
+    await _call("POST", f"/giveaways/{giveaway_id}/announced", json={"messageId": str(message_id or "")})
+
+
+async def giveaway_claim_link(giveaway_id, discord_user_id):
+    return await _call("POST", f"/giveaways/{giveaway_id}/claim-link", json={"discordUserId": str(discord_user_id)})
+
+
+async def giveaway_work():
+    return await _call("POST", "/giveaways/work", json={})
+
+
+async def giveaway_dm_done(winner_id, ok, kind):
+    await _call("POST", f"/giveaways/winners/{winner_id}/dm", json={"ok": bool(ok), "kind": kind})
+
+
+async def giveaway_expired_noted(winner_id):
+    await _call("POST", f"/giveaways/winners/{winner_id}/expired-noted", json={})
+
+
+async def giveaway_claim_noted(winner_id):
+    await _call("POST", f"/giveaways/winners/{winner_id}/claim-noted", json={})
+
+
+async def giveaway_reroll_announced(winner_id):
+    await _call("POST", f"/giveaways/winners/{winner_id}/reroll-announced", json={})
+
+
+async def reroll_winner(winner_id, actor_name=""):
+    return await _call("POST", f"/giveaways/winners/{winner_id}/reroll", json={"actorName": actor_name})
+
+
+async def extend_winner(winner_id, actor_name=""):
+    return await _call("POST", f"/giveaways/winners/{winner_id}/extend", json={"actorName": actor_name})
+
+
+async def send_giveaway_link(discord_user_id, giveaway_id="", actor_name=""):
+    return await _call("POST", "/giveaways/sendlink", json={"discordUserId": str(discord_user_id), "giveawayId": giveaway_id or "", "actorName": actor_name})
+
+
+async def award_prize(**fields):
+    return await _call("POST", "/giveaways/award", json=fields)
