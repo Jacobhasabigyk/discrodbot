@@ -334,6 +334,19 @@ async def main():
     # ---- autocomplete
     choices = await cog.prize_choices(fd.Interaction(owner, guild, channel), "grip")
     assert choices[0].value == "c" * 24
+
+    # store can't be reached / old backend: say why instead of an empty list
+    async def broken(q=""):
+        raise buttonland.ButtonlandError("Not found", 404)
+    buttonland.giveaway_prizes = broken
+    cog.prize_cache = {"at": 0, "query": None, "items": []}
+    choices = await cog.prize_choices(fd.Interaction(owner, guild, channel), "kriss")
+    assert choices[0].value == "error" and "restart the backend" in choices[0].name
+    typed = fd.Interaction(owner, guild, channel)
+    await cog.award(typed, alice, "WE/TM KRISS Vector Style Mag Plate", shipping_free)
+    assert "pick the prize from the list" in typed.sent[-1].content
+    buttonland.giveaway_prizes = f_prizes
+    cog.prize_cache = {"at": 0, "query": None, "items": []}
     ns = fd.Interaction(owner, guild, channel)
     ns.namespace = types.SimpleNamespace(prize="c" * 24)
     options = await cog.option_choices(ns, "")

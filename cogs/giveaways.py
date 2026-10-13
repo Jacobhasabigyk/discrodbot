@@ -233,13 +233,11 @@ class Giveaways(commands.Cog):
             return None
 
     async def prizes(self, query):
+        """Products for the prize box. Raises ButtonlandError if the store can't be reached."""
         now = time.time()
         if self.prize_cache["query"] == query and now - self.prize_cache["at"] < 20:
             return self.prize_cache["items"]
-        try:
-            items = await buttonland.giveaway_prizes(query)
-        except ButtonlandError:
-            items = []
+        items = await buttonland.giveaway_prizes(query)
         self.prize_cache = {"at": now, "query": query, "items": items}
         return items
 
@@ -248,19 +246,35 @@ class Giveaways(commands.Cog):
 
     # ---------------- autocomplete ----------------
     async def prize_choices(self, interaction, current):
-        items = await self.prizes(current or "")
+        try:
+            items = await self.prizes((current or "").strip())
+        except ButtonlandError as error:
+            # Show why instead of an empty list (e.g. backend not updated / offline).
+            reason = "store API too old: restart the backend" if error.status == 404 else error.message
+            print(f"[giveaways] prize search failed: {error.status} {error.message}")
+            return [app_commands.Choice(name=f"⚠️ can't load products ({reason})"[:100], value="error")]
+        if not items and current:
+            # Long names: try just the first word so a near match still shows up.
+            first = current.strip().split()[0] if current.strip() else ""
+            if first and first != current.strip():
+                try:
+                    items = await self.prizes(first)
+                except ButtonlandError:
+                    items = []
         return [app_commands.Choice(name=item["name"][:100], value=item["id"]) for item in items[:25]]
 
     async def option_choices(self, interaction, current):
         product_id = getattr(getattr(interaction, "namespace", None), "prize", None)
         if not product_id:
             return []
-        items = await self.prizes("")
+        try:
+            items = await self.prizes("")
+        except ButtonlandError:
+            return []
         product = next((item for item in items if item["id"] == product_id), None)
         if not product:
-            for item in await self.prizes(current or ""):
-                if item["id"] == product_id:
-                    product = item
+            cached = self.prize_cache.get("items") or []
+            product = next((item for item in cached if item["id"] == product_id), None)
         if not product:
             return []
         choices = [app_commands.Choice(name="Winner picks", value="choose")]
@@ -320,6 +334,8 @@ class Giveaways(commands.Cog):
     ):
         if not has_role(interaction.user, GIVEAWAY_ROLES):
             return await self.deny(interaction)
+        if not re.fullmatch(r"[a-f0-9]{24}", str(prize or "")):
+            return await interaction.response.send_message("pick the prize from the list that pops up while you type (don't just type the name).", ephemeral=True)
         minutes = parse_duration(duration)
         if not minutes:
             return await interaction.response.send_message("couldn't read that duration. try `30m`, `2h`, `1d` or `1d12h`.", ephemeral=True)
@@ -480,6 +496,8 @@ class Giveaways(commands.Cog):
     ):
         if not has_role(interaction.user, AWARD_ROLES):
             return await self.deny(interaction, "only the owner can give prizes by hand.")
+        if not re.fullmatch(r"[a-f0-9]{24}", str(prize or "")):
+            return await interaction.response.send_message("pick the prize from the list that pops up while you type (don't just type the name).", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         try:
             data = await buttonland.award_prize(
